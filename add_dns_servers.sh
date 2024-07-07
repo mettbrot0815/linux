@@ -5,16 +5,16 @@ sudo cp /etc/resolv.conf /etc/resolv.conf.backup
 
 # List of public DNS servers to add
 DNS_SERVERS=(
-    "8.8.8.8"   # Google
-    "8.8.4.4"   # Google
-    "1.1.1.1"   # Cloudflare
-    "1.0.0.1"   # Cloudflare
-    "9.9.9.9"   # Quad9
+    "8.8.8.8"         # Google
+    "8.8.4.4"         # Google
+    "1.1.1.1"         # Cloudflare
+    "1.0.0.1"         # Cloudflare
+    "9.9.9.9"         # Quad9
     "149.112.112.112" # Quad9
     "208.67.222.222"  # OpenDNS
     "208.67.220.220"  # OpenDNS
-    "64.6.64.6"   # Verisign
-    "64.6.65.6"   # Verisign
+    "64.6.64.6"       # Verisign
+    "64.6.65.6"       # Verisign
 )
 
 # Write DNS servers to resolv.conf
@@ -23,7 +23,7 @@ DNS_SERVERS=(
     for dns in "${DNS_SERVERS[@]}"; do
         echo "nameserver $dns"
     done
-} | sudo tee /etc/resolv.conf
+} | sudo tee /etc/resolv.conf >/dev/null
 
 # Display the new resolv.conf
 echo "Updated /etc/resolv.conf:"
