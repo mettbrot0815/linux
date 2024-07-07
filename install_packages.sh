@@ -1,17 +1,44 @@
 #!/bin/bash
 
-# Update package lists and install packages
-echo "Updating package lists and installing packages..."
-sudo apt update -y && sudo apt install -y docker.io golang-go python3-full python3-venv nala nload tor torbrowser-launcher nyx
+# Function to check if a package is installed
+is_package_installed() {
+    dpkg -l "$1" &> /dev/null
+}
 
-# Verify installation
-echo "Verifying installation of packages..."
-packages=("docker.io" "golang-go" "python3-full" "python3-venv" "nala" "nload" "tor" "torbrowser-launcher" "nyx")
-for package in "${packages[@]}"
-do
-    if dpkg -l | grep -q "$package"; then
-        echo "$package successfully installed."
+# List of packages to install
+PACKAGES=(
+    "neofetch"
+    "htop"
+    "nmap"
+    "wireshark"
+    "gparted"
+    "vlc"
+    "openvpn"
+    "git"
+    "curl"
+    "wget"
+    "python3"
+    "python3-pip"
+    "build-essential"
+    "virtualbox"
+)
+
+# Update package lists
+sudo apt update
+
+# Install packages
+for package in "${PACKAGES[@]}"; do
+    if is_package_installed "$package"; then
+        echo "$package is already installed."
     else
-        echo "$package installation failed."
+        sudo apt install -y "$package"
     fi
 done
+
+# Optionally install additional packages specific to Kali Linux
+# Uncomment and modify as needed
+# sudo apt install -y kali-linux-full
+
+# Display installed packages
+echo "Installed packages:"
+dpkg -l | grep '^ii'
