@@ -1,0 +1,84 @@
+Remote Code Execution (RCE) Vulnerabilities
+
+1. **Apache Struts RCE (CVE-2017-5638, CVE-2017-12617)**
+
+http.title:"Apache Struts" "struts2" "ognl" "ognl.OgnlContext"
+
+2. **JBoss RCE (CVE-2010-0738, CVE-2017-7504)**
+
+http.title:"JBoss" "jboss" "welcome" "JBoss AS"
+
+3. **WebLogic RCE (CVE-2018-2894, CVE-2020-2883)**
+
+http.title:"WebLogic" "weblogic" "Welcome to Oracle WebLogic Server"
+
+4. **ThinkPHP RCE (CVE-2018-20062, CVE-2019-9978)**
+
+http.title:"ThinkPHP" "ThinkPHP" "powered by ThinkPHP"
+
+5. **Drupalgeddon RCE (CVE-2018-7600, CVE-2018-7602)**
+
+http.component:"Drupal" "Drupal 7" "Drupal 8"
+
+6. **WordPress RCE (various plugins and themes)**
+
+http.title:"WordPress" "WordPress" "powered by WordPress"
+
+
+7. **PHPMyAdmin RCE (CVE-2010-3062, CVE-2016-10033)**
+
+http.title:"phpMyAdmin" "phpMyAdmin" "phpMyAdmin - Web based MySQL browser"
+
+
+8. **Elasticsearch RCE (CVE-2015-1427)**
+
+http.component:"Elasticsearch" "Elasticsearch - version"
+
+
+9. **Hadoop RCE (CVE-2019-0702, CVE-2019-0703)**
+
+http.title:"Hadoop" "Hadoop" "Apache Hadoop"
+
+10. **Redis RCE (unauthorized access)**
+
+port:6379
+
+
+### Additional Useful Dorks
+
+11. **Apache Directory Listings**
+
+ http.title:"Index of /" http.html:".pem"
+
+
+12. **Misconfigured WordPress**
+
+ http.html:"* The wp-config.php creation script uses this file"
+
+
+13. **OpenProject**
+
+ http.title:"OpenProject" "OpenProject - Welcome to OpenProject"
+
+
+14. **osTicket**
+
+ http.title:"osTicket" "osTicket - Open Source Ticket System"
+
+
+15. **ownCloud**
+
+ http.title:"ownCloud" "ownCloud - Secure File Sharing"
+
+
+16. **Pulse Secure**
+
+ http.html:/dana-na
+
+
+17. **Tor / Dark Web sites**
+
+ onion-location
+
+
+These dorks cover a wide range of vulnerabilities and misconfigurations, helping you to identify potential security issues in various types of devices and systems. Always ensure you have proper authorization before testing any targets.
