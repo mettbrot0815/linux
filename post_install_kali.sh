@@ -2,49 +2,37 @@
 
 # Update package list and upgrade installed packages
 echo "Updating package list and upgrading installed packages..."
-sudo apt update -y
-sudo apt upgrade -y
+sudo apt update -y && sudo apt upgrade -y
 
 # Install additional tools
 echo "Installing additional tools..."
 sudo apt install -y \
-    # Web application analysis tools
-    burp-suite \
-    zap2.4 \
+    burpsuite \
+    zaproxy \
     wfuzz \
-    # Network analysis tools
     wireshark \
     nmap \
     aircrack-ng \
-    # Exploitation tools
     metasploit-framework \
     sqlmap \
-    # Password cracking tools
     hashcat \
     john \
-    # Reverse engineering tools
     gdb \
     ghidra \
-    # Forensics tools
-    volatility \
-    SleuthKit \
-    # Other useful tools
+    volatility-tools \
+    sleuthkit \
     git \
     vim \
-    htop \
-    # Set up Kali's repositories for rolling updates
-    kali-rolling
-    
-# Set up some useful configurations
-echo "Setting up useful configurations..."
+    htop
+
 # Set up ZSH as default shell
-echo "zsh" | sudo tee -a /etc/passwd
-chsh -s /bin/zsh
+echo "Setting up ZSH as default shell..."
+sudo chsh -s /bin/zsh $(whoami)
 
 # Configure sources.list for rolling updates
 echo "Configuring sources.list for rolling updates..."
-echo "deb http://http.kali.org/kali rolling main non-free contrib" | sudo tee -a /etc/apt/sources.list
-echo "deb-src http://http.kali.org/kali rolling main non-free contrib" | sudo tee -a /etc/apt/sources.list
+echo "deb http://http.kali.org/kali kali-rolling main non-free contrib" | sudo tee /etc/apt/sources.list
+echo "deb-src http://http.kali.org/kali kali-rolling main non-free contrib" | sudo tee -a /etc/apt/sources.list
 
 # Update package list again to include Kali's rolling repositories
 echo "Updating package list again..."
@@ -56,7 +44,7 @@ sudo apt update -y
 # read USERNAME
 # sudo useradd -m -s /bin/bash $USERNAME
 # echo "Please enter the password for $USERNAME:"
-# echo "$USERNAME:$USERNAME" | sudo chpasswd
+# sudo passwd $USERNAME
 # echo "User '$USERNAME' created with home directory '/home/$USERNAME'."
 
 echo "Post-installation script completed. Enjoy your Kali Linux experience!"
