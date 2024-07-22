@@ -51,12 +51,12 @@ echo "Updating package list again..."
 sudo apt update -y
 
 # Set up a basic Kali user for daily use (optional)
-echo "Setting up a basic Kali user for daily use..."
-echo "Please enter the desired username:"
-read USERNAME
-sudo useradd -m -s /bin/bash $USERNAME
-echo "Please enter the password for $USERNAME:"
-echo "$USERNAME:$USERNAME" | sudo chpasswd
-echo "User '$USERNAME' created with home directory '/home/$USERNAME'."
+# echo "Setting up a basic Kali user for daily use..."
+# echo "Please enter the desired username:"
+# read USERNAME
+# sudo useradd -m -s /bin/bash $USERNAME
+# echo "Please enter the password for $USERNAME:"
+# echo "$USERNAME:$USERNAME" | sudo chpasswd
+# echo "User '$USERNAME' created with home directory '/home/$USERNAME'."
 
 echo "Post-installation script completed. Enjoy your Kali Linux experience!"
