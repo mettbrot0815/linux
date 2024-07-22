@@ -34,6 +34,12 @@ sudo apt install -y \
     htop \
     # Set up Kali's repositories for rolling updates
     kali-rolling
+    
+# Set up some useful configurations
+echo "Setting up useful configurations..."
+# Set up ZSH as default shell
+echo "zsh" | sudo tee -a /etc/passwd
+chsh -s /bin/zsh
 
 # Configure sources.list for rolling updates
 echo "Configuring sources.list for rolling updates..."
