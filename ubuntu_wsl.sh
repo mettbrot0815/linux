@@ -2,17 +2,17 @@
 
 # ============================================================================
 # WSL2 Ultimate AI & Development Environment Setup Script
-# Complete Version - Ubuntu 24.04 (Noble) compatible
-# All paths configured; clear descriptions for every tool.
+# Final Version – Ubuntu 24.04 (Noble) compatible
+# All paths configured; clear descriptions; Heretic dependencies pinned.
 # ============================================================================
 
-set -e
+set -e  # Exit on error
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 print_status() { echo -e "${GREEN}[✓]${NC} $1"; }
-print_info() { echo -e "${BLUE}[i]${NC} $1"; }
+print_info()  { echo -e "${BLUE}[i]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
 print_error() { echo -e "${RED}[✗]${NC} $1"; }
 print_section() {
@@ -39,7 +39,7 @@ clear
 echo -e "${PURPLE}"
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║     WSL2 Ultimate AI & Development Environment Setup     ║"
-echo "║                  COMPLETE VERSION                        ║"
+echo "║                  FINAL VERSION                           ║"
 echo "╚═══════════════════════════════════════════════════════════╝${NC}\n"
 
 print_warning "This script will install various tools on your fresh WSL Ubuntu."
@@ -58,7 +58,7 @@ sudo apt install -y \
     python3-pip python3-venv python3-full git curl wget build-essential cmake \
     htop neofetch nano tmux zstd ca-certificates gnupg lsb-release \
     software-properties-common apt-transport-https unzip zip gpg tree \
-    mousepad thunar
+    mousepad thunar bc  # bc needed for numeric comparisons
 
 print_status "Base system packages installed"
 
@@ -115,27 +115,34 @@ for choice in "${selected_ai[@]}"; do
             print_status "AI environment created at ~/ai-env"
             ;;
         3)
-            print_info "Installing Heretic..."
+            print_info "Installing Heretic with pinned dependencies..."
             python3 -m venv ~/heretic-env
             source ~/heretic-env/bin/activate
-            pip install "huggingface-hub[cli]==0.24.0" transformers==4.44.2
+            # Pin exact versions to avoid conflicts
+            pip install "huggingface-hub==0.24.0" "transformers==4.44.2"
             pip install torch --index-url https://download.pytorch.org/whl/cu124
             pip install accelerate bitsandbytes heretic-llm
+            # Create model download script (points to existing download if already done)
             cat > ~/download_model.py << 'EOF'
 from huggingface_hub import snapshot_download
 import os
-snapshot_download(
-    repo_id="Qwen/Qwen2.5-7B-Instruct",
-    local_dir=os.path.expanduser("~/models/qwen2.5-7b"),
-    local_dir_use_symlinks=False,
-    resume_download=True,
-    max_workers=4
-)
+model_path = os.path.expanduser("~/models/qwen2.5-7b")
+if not os.path.exists(model_path):
+    print("Downloading model...")
+    snapshot_download(
+        repo_id="Qwen/Qwen2.5-7B-Instruct",
+        local_dir=model_path,
+        local_dir_use_symlinks=False,
+        resume_download=True,
+        max_workers=4
+    )
+else:
+    print(f"Model already exists at {model_path}")
 EOF
             chmod +x ~/download_model.py
             echo "alias heretic-run='source ~/heretic-env/bin/activate && heretic --model ~/models/qwen2.5-7b --quantization bnb_4bit'" >> ~/.bashrc
             deactivate
-            print_status "Heretic installed. Run 'python ~/download_model.py' to download model"
+            print_status "Heretic installed. Run 'python3 ~/download_model.py' to download model (if not already present)"
             ;;
         4)
             print_info "Installing llama.cpp..."
@@ -155,7 +162,7 @@ EOF
             cd ~/text-generation-webui
             ./start_linux.sh --listen > /dev/null 2>&1 &
             cd ~
-            print_status "Text Generation WebUI started"
+            print_status "Text Generation WebUI started (background)"
             ;;
         6)
             print_info "Installing vector databases..."
@@ -517,8 +524,8 @@ echo "  source ~/.bashrc"
 echo "  ai-env                     - Activate Python AI environment"
 echo "  ollama-run                 - Run Qwen with Ollama"
 echo "  ~/test_ai.py               - Verify PyTorch & GPU"
-echo "  python ~/download_model.py - Download model for Heretic (if selected)"
-echo "  heretic-run                - Run Heretic"
+echo "  python3 ~/download_model.py - Download model for Heretic (if selected)"
+echo "  heretic-run                - Run Heretic (after model download)"
 echo "  pentestagent / pentagi / hackerai / hexstrike - Run security tools"
 echo ""
 echo -e "${GREEN}✅ Setup complete! Enjoy your environment.${NC}"
