@@ -2,21 +2,13 @@
 
 # ============================================================================
 # WSL2 Ultimate AI & Development Environment Setup Script
-# Complete Version - Includes AI tools, Dev tools, Terminal enhancements,
-# and Security/Pentesting tools (PentAGI, PentestAgent, HackerAI, HexStrike)
-# All paths correctly set for Ollama integration
+# Complete Version - Ubuntu 24.04 (Noble) compatible
 # ============================================================================
 
-set -e  # Exit on error
+set -e
 
-# Color codes
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 print_status() { echo -e "${GREEN}[✓]${NC} $1"; }
 print_info() { echo -e "${BLUE}[i]${NC} $1"; }
@@ -31,13 +23,17 @@ print_section() {
 ask_yes_no() {
     local question=$1 default=${2:-n} answer
     while true; do
-        [[ $default == "y" ]] && read -p "$question [Y/n]: " answer || read -p "$question [y/N]: " answer
-        answer=${answer:-$default}
+        if [[ $default == "y" ]]; then
+            read -p "$question [Y/n]: " answer
+            answer=${answer:-y}
+        else
+            read -p "$question [y/N]: " answer
+            answer=${answer:-n}
+        fi
         case $answer in [Yy]*) return 0;; [Nn]*) return 1;; *) echo "Please answer yes or no.";; esac
     done
 }
 
-# Welcome
 clear
 echo -e "${PURPLE}"
 echo "╔═══════════════════════════════════════════════════════════╗"
@@ -49,12 +45,12 @@ print_warning "This script will install various tools on your fresh WSL Ubuntu."
 ask_yes_no "Ready to begin?" "y" || { print_error "Setup cancelled."; exit 0; }
 
 # ============================================================================
-# STEP 1: Base System Packages (always installed)
+# STEP 1: Base System Packages
 # ============================================================================
 print_section "STEP 1: Installing Base System Packages"
 
 print_info "Updating system packages..."
-sudo apt update && sudo apt upgrade -y
+sudo apt update || true  # Ignore PPA errors
 
 print_info "Installing essential base tools..."
 sudo apt install -y \
@@ -63,7 +59,7 @@ sudo apt install -y \
     software-properties-common apt-transport-https unzip zip gpg tree \
     mousepad thunar
 
-print_status "Base system packages installed (including mousepad, thunar)"
+print_status "Base system packages installed"
 
 # ============================================================================
 # STEP 2: AI Tools Selection
@@ -71,10 +67,10 @@ print_status "Base system packages installed (including mousepad, thunar)"
 print_section "STEP 2: AI Tools Selection"
 
 ai_options=(
-    "Ollama + Qwen2.5 7B model (4.7GB download)"
-    "Python AI Virtual Environment (PyTorch, Transformers, etc.)"
-    "Heretic with fixed dependencies (huggingface-hub 0.24.0)"
-    "llama.cpp (for GGUF model work)"
+    "Ollama + Qwen2.5 7B model"
+    "Python AI Virtual Environment (PyTorch, Transformers)"
+    "Heretic with fixed dependencies"
+    "llama.cpp"
     "Text Generation WebUI (Oobabooga)"
     "Vector Databases (ChromaDB, Qdrant)"
     "LangChain & LlamaIndex"
@@ -93,20 +89,17 @@ for choice in "${ai_choices[@]}"; do
     fi
 done
 
-# Install selected AI tools
 for choice in "${selected_ai[@]}"; do
     case $choice in
         1)
             print_info "Installing Ollama..."
             curl -fsSL https://ollama.com/install.sh | sh
-            # Set Ollama models path
             mkdir -p ~/models/ollama
             echo "export OLLAMA_MODELS=~/models/ollama" >> ~/.bashrc
             ollama serve > /dev/null 2>&1 &
             sleep 5
-            print_info "Pulling Qwen2.5 7B model (may take a while)..."
-            ollama pull qwen2.5:7b-instruct-q4_k_m
-            print_status "Ollama + Qwen model installed!"
+            ollama pull qwen2.5:7b-instruct-q4_k_m &
+            print_status "Ollama installed, model downloading in background"
             ;;
         2)
             print_info "Creating Python AI virtual environment..."
@@ -118,13 +111,12 @@ for choice in "${selected_ai[@]}"; do
             print_status "AI environment created at ~/ai-env"
             ;;
         3)
-            print_info "Installing Heretic with fixed dependencies..."
+            print_info "Installing Heretic..."
             python3 -m venv ~/heretic-env
             source ~/heretic-env/bin/activate
             pip install "huggingface-hub[cli]==0.24.0" transformers==4.44.2
             pip install torch --index-url https://download.pytorch.org/whl/cu124
             pip install accelerate bitsandbytes heretic-llm
-            # Create model download script
             cat > ~/download_model.py << 'EOF'
 from huggingface_hub import snapshot_download
 import os
@@ -139,7 +131,7 @@ EOF
             chmod +x ~/download_model.py
             echo "alias heretic-run='source ~/heretic-env/bin/activate && heretic --model ~/models/qwen2.5-7b --quantization bnb_4bit'" >> ~/.bashrc
             deactivate
-            print_status "Heretic installed. Run 'python ~/download_model.py' to download model, then 'heretic-run'"
+            print_status "Heretic installed. Run 'python ~/download_model.py' to download model"
             ;;
         4)
             print_info "Installing llama.cpp..."
@@ -191,20 +183,19 @@ done
 print_section "STEP 3: Development Tools Selection"
 
 dev_options=(
-    "Node.js + npm + nvm (Node Version Manager)"
-    "Global NPM tools (yarn, pm2, typescript, etc.)"
-    "Docker + Docker Compose (latest)"
-    "Docker development tools (hadolint, dive)"
-    "Python version managers (pyenv, poetry)"
+    "Node.js + npm + nvm"
+    "Global NPM tools"
+    "Docker + Docker Compose"
+    "Docker dev tools (hadolint, dive)"
+    "pyenv + poetry"
     "SDKMAN (Java, Maven, Gradle)"
     "GitHub CLI (gh)"
-    "Database tools (PostgreSQL, Redis, MongoDB)"
+    "Databases (PostgreSQL, Redis, MongoDB)"
 )
 
-echo "Select development tools to install (space-separated numbers):"
+echo "Select development tools to install:"
 for i in "${!dev_options[@]}"; do echo "  $((i+1)). ${dev_options[$i]}"; done
-echo ""
-read -p "Enter numbers (e.g., 1 2 3): " -a dev_choices
+read -p "Enter numbers: " -a dev_choices
 
 for choice in "${dev_choices[@]}"; do
     case $choice in
@@ -214,7 +205,7 @@ for choice in "${dev_choices[@]}"; do
             export NVM_DIR="$HOME/.nvm"
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
             nvm install --lts && nvm use --lts
-            print_status "Node.js $(node -v) and npm $(npm -v) installed"
+            print_status "Node.js $(node -v) installed"
             ;;
         2)
             print_info "Installing global NPM tools..."
@@ -237,10 +228,10 @@ for choice in "${dev_choices[@]}"; do
             sudo usermod -aG docker $USER
             sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
             sudo chmod +x /usr/local/bin/docker-compose
-            print_status "Docker and Docker Compose installed (log out/in for group changes)"
+            print_status "Docker installed (log out/in to use docker without sudo)"
             ;;
         4)
-            print_info "Installing Docker development tools..."
+            print_info "Installing Docker dev tools..."
             sudo wget -O /bin/hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 && sudo chmod +x /bin/hadolint
             wget https://github.com/wagoodman/dive/releases/download/v0.12.0/dive_0.12.0_linux_amd64.deb && sudo dpkg -i dive_*.deb && rm dive_*.deb
             print_status "Docker dev tools installed"
@@ -271,11 +262,13 @@ for choice in "${dev_choices[@]}"; do
             ;;
         8)
             print_info "Installing databases..."
-            sudo apt install -y postgresql postgresql-contrib && sudo service postgresql start
-            sudo apt install -y redis-server && sudo service redis-server start
+            sudo apt install -y postgresql postgresql-contrib && sudo systemctl start postgresql
+            sudo apt install -y redis-server && sudo systemctl start redis-server
+            # MongoDB for 24.04 may need different steps; using official repo
             wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | sudo apt-key add -
-            echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+            echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
             sudo apt update && sudo apt install -y mongodb-org
+            sudo systemctl start mongod
             print_status "Databases installed"
             ;;
     esac
@@ -287,17 +280,16 @@ done
 print_section "STEP 4: Terminal & Productivity Tools Selection"
 
 term_options=(
-    "Oh My Zsh with plugins (zsh-autosuggestions, syntax-highlighting)"
-    "Advanced monitoring tools (btop, nvtop, glances)"
+    "Oh My Zsh with plugins"
+    "Monitoring tools (btop, nvtop, glances)"
     "Git enhancements (lazygit, git-extras)"
     "Networking tools (httpie, jq, nmap)"
     "WSL performance tweaks"
 )
 
-echo "Select terminal & productivity tools to install (space-separated numbers):"
+echo "Select terminal tools to install:"
 for i in "${!term_options[@]}"; do echo "  $((i+1)). ${term_options[$i]}"; done
-echo ""
-read -p "Enter numbers (e.g., 1 2 3): " -a term_choices
+read -p "Enter numbers: " -a term_choices
 
 for choice in "${term_choices[@]}"; do
     case $choice in
@@ -309,7 +301,7 @@ for choice in "${term_choices[@]}"; do
             git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting
             sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' ~/.zshrc
             sudo chsh -s $(which zsh) $USER
-            print_status "Oh My Zsh installed (restart terminal to use)"
+            print_status "Oh My Zsh installed (restart terminal)"
             ;;
         2)
             print_info "Installing monitoring tools..."
@@ -319,8 +311,13 @@ for choice in "${term_choices[@]}"; do
         3)
             print_info "Installing Git enhancements..."
             sudo apt install -y git-extras
-            sudo add-apt-repository ppa:lazygit-team/release -y && sudo apt update && sudo apt install -y lazygit
-            print_status "Git tools installed"
+            # Install lazygit via direct download (no PPA for Noble)
+            LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
+            curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
+            tar xf lazygit.tar.gz lazygit
+            sudo install lazygit /usr/local/bin
+            rm lazygit lazygit.tar.gz
+            print_status "Git tools installed (lazygit via direct download)"
             ;;
         4)
             print_info "Installing networking tools..."
@@ -328,7 +325,7 @@ for choice in "${term_choices[@]}"; do
             print_status "Networking tools installed"
             ;;
         5)
-            print_info "Applying WSL performance tweaks..."
+            print_info "Applying WSL tweaks..."
             cat > ~/WSL_SETUP.txt << 'EOF'
 ===============================================
 WSL PERFORMANCE TWEAKS
@@ -343,13 +340,12 @@ Then in PowerShell: wsl --shutdown
 ===============================================
 EOF
             cat >> ~/.bashrc << 'EOF'
-# WSL specific aliases
 alias wsl-restart='cd ~ && cmd.exe /c wsl --shutdown'
 alias windows='cd /mnt/c/Users/$USER'
 alias chrome="/mnt/c/Program\ Files/Google/Chrome/Application/chrome.exe"
 alias code='cd $PWD && cmd.exe /c code .'
 EOF
-            print_status "WSL tweaks applied (see ~/WSL_SETUP.txt)"
+            print_status "WSL tweaks applied"
             ;;
     esac
 done
@@ -360,72 +356,65 @@ done
 print_section "STEP 5: Security & Pentesting Tools Selection"
 
 sec_options=(
-    "PentAGI - Autonomous AI penetration testing (Docker + complex stack)"
-    "PentestAgent - AI agent framework for black-box testing"
-    "HackerAI - Web-based AI penetration testing assistant"
-    "HexStrike AI - MCP server with 150+ security tools"
+    "PentAGI (Docker-based)"
+    "PentestAgent (Python 3.10+)"
+    "HackerAI (Node.js)"
+    "HexStrike AI (150+ tools)"
 )
 
-echo "Select security/pentesting tools to install (space-separated numbers):"
+echo "Select security tools to install:"
 for i in "${!sec_options[@]}"; do echo "  $((i+1)). ${sec_options[$i]}"; done
-echo ""
-read -p "Enter numbers (e.g., 1 2 3): " -a sec_choices
+read -p "Enter numbers: " -a sec_choices
 
 for choice in "${sec_choices[@]}"; do
     case $choice in
         1)
             print_info "Installing PentAGI..."
             if ! command -v docker &> /dev/null; then
-                print_warning "Docker not found. Please install Docker first (Dev Tools option 3)."
+                print_warning "Docker not installed. Install Dev Tools option 3 first."
             else
                 git clone https://github.com/vxcontrol/pentagi.git ~/pentagi
                 cd ~/pentagi
                 cp .env.example .env
-                print_info "Edit ~/pentagi/.env to add API keys (OpenAI, Anthropic, etc.)"
+                echo "Edit ~/pentagi/.env with your API keys"
                 docker-compose up -d
                 cd ~
-                print_status "PentAGI installed! Web UI at http://localhost:8080"
                 echo "alias pentagi='cd ~/pentagi && docker-compose up -d'" >> ~/.bashrc
+                print_status "PentAGI started at http://localhost:8080"
             fi
             ;;
         2)
             print_info "Installing PentestAgent..."
             python_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
             if (( $(echo "$python_version < 3.10" | bc -l) )); then
-                print_error "PentestAgent requires Python 3.10+. Current: $python_version"
+                print_error "PentestAgent requires Python 3.10+ (you have $python_version)"
             else
                 git clone https://github.com/GH05TCREW/pentestagent.git ~/pentestagent
                 cd ~/pentestagent
-                if [[ -f "scripts/setup.sh" ]]; then
-                    chmod +x scripts/setup.sh && ./scripts/setup.sh
-                else
-                    python3 -m venv venv
-                    source venv/bin/activate
-                    pip install -e ".[all]"
-                    playwright install chromium
-                    deactivate
-                fi
+                python3 -m venv venv
+                source venv/bin/activate
+                pip install -e ".[all]"
+                playwright install chromium
+                deactivate
                 cp .env.example .env
                 echo "alias pentestagent='cd ~/pentestagent && source venv/bin/activate && pentestagent'" >> ~/.bashrc
                 cd ~
-                print_status "PentestAgent installed. Edit ~/pentestagent/.env and run 'pentestagent'"
+                print_status "PentestAgent installed. Edit ~/pentestagent/.env"
             fi
             ;;
         3)
             print_info "Installing HackerAI..."
             if ! command -v node &> /dev/null; then
-                print_warning "Node.js not found. Please install Node.js first (Dev Tools option 1)."
+                print_warning "Node.js not installed. Install Dev Tools option 1 first."
             else
                 command -v pnpm &> /dev/null || npm install -g pnpm
                 git clone https://github.com/hackerai-tech/hackerai.git ~/hackerai
                 cd ~/hackerai
                 pnpm install
                 pnpm run setup
-                print_info "HackerAI requires multiple API keys and services."
-                print_info "See https://github.com/hackerai-tech/hackerai for setup."
                 echo "alias hackerai='cd ~/hackerai && pnpm run dev'" >> ~/.bashrc
                 cd ~
-                print_status "HackerAI installed. Run 'hackerai' after configuring .env"
+                print_status "HackerAI installed. See ~/hackerai/.env for configuration."
             fi
             ;;
         4)
@@ -436,8 +425,7 @@ for choice in "${sec_choices[@]}"; do
             source hexstrike-env/bin/activate
             pip install -r requirements.txt
             deactivate
-            print_info "Installing security tools (this may take a while)..."
-            sudo apt update
+            echo "Installing system security tools (may take a few minutes)..."
             sudo apt install -y nmap masscan rustscan amass subfinder nuclei fierce dnsenum \
                 autorecon theharvester responder netexec enum4linux-ng gobuster feroxbuster \
                 dirsearch ffuf dirb httpx katana nikto sqlmap wpscan arjun paramspider dalfox \
@@ -462,47 +450,34 @@ EOF
 done
 
 # ============================================================================
-# STEP 6: Finalizing Setup - Create Directories, Aliases, and Test Scripts
+# STEP 6: Final Cleanup & Aliases
 # ============================================================================
-print_section "STEP 6: Finalizing Setup"
+print_section "STEP 6: Final Cleanup"
 
-print_info "Creating project directories..."
-mkdir -p ~/models ~/projects ~/downloads ~/cache/huggingface ~/docker
+mkdir -p ~/models ~/projects ~/downloads ~/cache/huggingface
 echo "export HF_HOME=~/cache/huggingface" >> ~/.bashrc
 
-# Add common aliases (if not already added)
+# Common aliases (if not already there)
 cat >> ~/.bashrc << 'EOF'
-
-# ===== AI Environment Aliases =====
 alias ai-env='source ~/ai-env/bin/activate'
 alias ollama-run='ollama run qwen2.5:7b-instruct-q4_k_m'
-alias models='cd ~/models'
-alias projects='cd ~/projects'
-
-# ===== System Monitoring =====
 alias mem='free -h'
 alias gpu='nvidia-smi'
 alias top-ai='watch -n 2 nvidia-smi'
-
-# ===== Docker =====
 alias d='docker'
 alias dc='docker-compose'
 alias dps='docker ps'
 alias di='docker images'
-
-# ===== Git =====
 alias gs='git status'
 alias ga='git add'
 alias gc='git commit'
 alias gp='git push'
 alias gl='git log --oneline --graph'
-
-# ===== GUI Apps =====
 alias edit='mousepad'
 alias files='thunar'
 EOF
 
-# Create test script
+# Test script
 cat > ~/test_ai.py << 'EOF'
 #!/usr/bin/env python3
 print("Testing AI environment...")
@@ -514,14 +489,14 @@ try:
         print(f"✅ GPU: {torch.cuda.get_device_name(0)}")
     import transformers
     print(f"✅ Transformers {transformers.__version__}")
-    print("\n🎉 AI environment is ready!")
-except ImportError as e:
+    print("\n🎉 AI environment ready!")
+except Exception as e:
     print(f"❌ Error: {e}")
 EOF
 chmod +x ~/test_ai.py
 
 # ============================================================================
-# FINAL SUMMARY
+# SUMMARY
 # ============================================================================
 clear
 print_section "🎉 INSTALLATION COMPLETE!"
@@ -533,35 +508,13 @@ for c in "${term_choices[@]}"; do echo "  ✓ ${term_options[$((c-1))]}"; done
 for c in "${sec_choices[@]}"; do echo "  ✓ ${sec_options[$((c-1))]}"; done
 
 echo ""
-echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${YELLOW}Quick Start Commands:${NC}"
-echo "  source ~/.bashrc           - Reload your shell configuration"
+echo -e "${YELLOW}Quick Start:${NC}"
+echo "  source ~/.bashrc"
 echo "  ai-env                     - Activate Python AI environment"
-echo "  ollama-run                 - Run Qwen model with Ollama"
-echo "  python ~/download_model.py - Download model for Heretic (if installed)"
-echo "  heretic-run                 - Run Heretic (after model download)"
-echo "  pentestagent                - Run PentestAgent (if installed)"
-echo "  pentagi                     - Start PentAGI (if installed)"
-echo "  hackerai                    - Run HackerAI dev server (if installed)"
-echo "  hexstrike                   - Start HexStrike server (if installed)"
-echo "  ~/test_ai.py                - Test AI environment"
-echo "  mem/gpu/top-ai              - Monitor resources"
-echo "  edit/files                   - Open mousepad/thunar"
+echo "  ollama-run                 - Run Qwen with Ollama"
+echo "  ~/test_ai.py               - Verify PyTorch & GPU"
+echo "  python ~/download_model.py - Download model for Heretic (if selected)"
+echo "  heretic-run                - Run Heretic"
+echo "  pentestagent / pentagi / hackerai / hexstrike - Run security tools"
 echo ""
-echo -e "${YELLOW}Important Notes:${NC}"
-if [[ " ${dev_choices[@]} " =~ " 3 " ]]; then
-    echo "  • Docker: log out and back in, or run 'newgrp docker'"
-fi
-if [[ -f ~/WSL_SETUP.txt ]]; then
-    echo "  • See ~/WSL_SETUP.txt for Windows-side WSL performance config"
-fi
-for c in "${sec_choices[@]}"; do
-    case $c in
-        1) echo "  • PentAGI: edit ~/pentagi/.env with API keys";;
-        2) echo "  • PentestAgent: edit ~/pentestagent/.env with API keys";;
-        3) echo "  • HackerAI: follow setup guide at https://github.com/hackerai-tech/hackerai";;
-        4) echo "  • HexStrike: configure AI clients per their docs";;
-    esac
-done
-echo ""
-echo -e "${GREEN}✅ Setup complete! Enjoy your WSL AI development environment!${NC}"
+echo -e "${GREEN}✅ Setup complete! Enjoy your environment.${NC}"
