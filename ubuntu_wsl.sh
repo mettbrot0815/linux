@@ -1,21 +1,117 @@
 #!/bin/bash
 
-# AI Environment Setup Script for Fresh WSL
+# WSL2 Ultimate AI & Development Environment Setup Script
 # Run this AFTER your fresh Ubuntu installation
 
 set -e  # Exit on error
 
+# Color codes for pretty output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_status() {
+    echo -e "${GREEN}[✓]${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}[i]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[✗]${NC} $1"
+}
+
+print_section() {
+    echo -e "\n${PURPLE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  $1${NC}"
+    echo -e "${PURPLE}═══════════════════════════════════════════════════════════${NC}\n"
+}
+
+# Function to ask yes/no questions
+ask_yes_no() {
+    local question=$1
+    local default=${2:-n}
+    local answer
+    
+    while true; do
+        if [[ $default == "y" ]]; then
+            read -p "$question [Y/n]: " answer
+            answer=${answer:-y}
+        else
+            read -p "$question [y/N]: " answer
+            answer=${answer:-n}
+        fi
+        
+        case $answer in
+            [Yy]* ) return 0;;
+            [Nn]* ) return 1;;
+            * ) echo "Please answer yes or no.";;
+        esac
+    done
+}
+
+# Function to show menu and get selections
+show_menu() {
+    local title=$1
+    shift
+    local options=("$@")
+    local selections=()
+    
+    echo -e "\n${CYAN}$title${NC}"
+    echo "Use spacebar to toggle, Enter to confirm:"
+    
+    for i in "${!options[@]}"; do
+        echo "  $((i+1)). ${options[$i]}"
+    done
+    
+    read -p "Enter numbers (e.g., 1 2 3): " -a choices
+    
+    for choice in "${choices[@]}"; do
+        if [[ $choice =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#options[@]})); then
+            selections+=("${options[$((choice-1))]}")
+        fi
+    done
+    
+    echo "${selections[@]}"
+}
+
+# Welcome screen
+clear
+echo -e "${PURPLE}"
 echo "╔═══════════════════════════════════════════════════════════╗"
-echo "║        Fresh WSL AI Environment Setup Script             ║"
-echo "╚═══════════════════════════════════════════════════════════╝"
+echo "║     WSL2 Ultimate AI & Development Environment Setup     ║"
+echo "║                     Interactive Installer                 ║"
+echo "╚═══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Update system
-echo "📦 Updating system packages..."
+print_warning "This script will install various tools on your fresh WSL Ubuntu."
+print_warning "You can choose exactly what you want to install."
+echo ""
+
+if ! ask_yes_no "Ready to begin?" "y"; then
+    print_error "Setup cancelled."
+    exit 0
+fi
+
+# ============================================================================
+# BASE SYSTEM - Always installed
+# ============================================================================
+print_section "STEP 1: Installing Base System Packages"
+
+print_info "Updating system packages..."
 sudo apt update && sudo apt upgrade -y
 
-# Install essential tools (including zstd!)
-echo "🔧 Installing essential tools..."
+print_info "Installing essential base tools..."
 sudo apt install -y \
     python3-pip \
     python3-venv \
@@ -29,116 +125,509 @@ sudo apt install -y \
     neofetch \
     nano \
     tmux \
-    zstd  # 👈 Added zstd here!
+    zstd \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    software-properties-common \
+    apt-transport-https \
+    unzip \
+    zip \
+    gpg \
+    tree
 
-# Install Ollama
-echo "🦙 Installing Ollama..."
-curl -fsSL https://ollama.com/install.sh | sh
+print_status "Base system packages installed!"
 
-# Start Ollama service in background
-echo "🔄 Starting Ollama service..."
-ollama serve > /dev/null 2>&1 &
-sleep 5  # Give it time to start
+# ============================================================================
+# AI TOOLS MENU
+# ============================================================================
+print_section "STEP 2: AI Tools Selection"
 
-# Pull Qwen model with Ollama
-echo "⬇️  Pulling Qwen2.5 7B model with Ollama (4.7GB, may take a while)..."
-ollama pull qwen2.5:7b-instruct-q4_k_m
+ai_options=(
+    "Ollama + Qwen2.5 7B model (4.7GB download)"
+    "Python AI Virtual Environment (PyTorch, Transformers, etc.)"
+    "llama.cpp (for GGUF model work)"
+    "Text Generation WebUI (Oobabooga)"
+    "Vector Databases (ChromaDB, Qdrant)"
+    "LangChain & LlamaIndex"
+    "Jupyter Lab & Data Science Stack"
+)
 
-# Create virtual environment for Python
-echo "🐍 Creating Python virtual environment..."
-python3 -m venv ~/ai-env
-source ~/ai-env/bin/activate
+echo "Select AI tools to install (space-separated numbers):"
+selected_ai=()
+for i in "${!ai_options[@]}"; do
+    echo "  $((i+1)). ${ai_options[$i]}"
+done
+echo ""
+read -p "Enter numbers (e.g., 1 2 3): " -a ai_choices
 
-# Install Python AI packages in virtual environment
-echo "📚 Installing Python AI packages..."
-pip install --upgrade pip
-pip install \
-    torch \
-    transformers \
-    accelerate \
-    bitsandbytes \
-    huggingface-hub \
-    heretic-llm \
-    ipython \
-    jupyter \
-    numpy \
-    pandas \
-    matplotlib
+for choice in "${ai_choices[@]}"; do
+    if [[ $choice =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#ai_options[@]})); then
+        selected_ai+=($choice)
+    fi
+done
 
-# Create project directories
-echo "📁 Creating project directories..."
+# Install selected AI tools
+for choice in "${selected_ai[@]}"; do
+    case $choice in
+        1)
+            print_info "Installing Ollama..."
+            curl -fsSL https://ollama.com/install.sh | sh
+            ollama serve > /dev/null 2>&1 &
+            sleep 5
+            print_info "Pulling Qwen2.5 7B model (this may take a while)..."
+            ollama pull qwen2.5:7b-instruct-q4_k_m
+            print_status "Ollama + Qwen model installed!"
+            ;;
+        2)
+            print_info "Creating Python AI virtual environment..."
+            python3 -m venv ~/ai-env
+            source ~/ai-env/bin/activate
+            pip install --upgrade pip
+            pip install \
+                torch \
+                transformers \
+                accelerate \
+                bitsandbytes \
+                huggingface-hub \
+                heretic-llm \
+                ipython \
+                sentencepiece \
+                protobuf
+            deactivate
+            print_status "Python AI environment created at ~/ai-env!"
+            ;;
+        3)
+            print_info "Installing llama.cpp..."
+            git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp
+            cd ~/llama.cpp
+            make -j$(nproc)
+            cd ~
+            print_status "llama.cpp installed!"
+            ;;
+        4)
+            print_info "Installing Text Generation WebUI..."
+            git clone https://github.com/oobabooga/text-generation-webui ~/text-generation-webui
+            cd ~/text-generation-webui
+            ./start_linux.sh --listen > /dev/null 2>&1 &
+            cd ~
+            print_status "Text Generation WebUI installed!"
+            ;;
+        5)
+            print_info "Installing vector databases..."
+            source ~/ai-env/bin/activate 2>/dev/null || python3 -m venv ~/ai-env && source ~/ai-env/bin/activate
+            pip install chromadb qdrant-client
+            deactivate
+            print_status "Vector database clients installed!"
+            ;;
+        6)
+            print_info "Installing LangChain & LlamaIndex..."
+            source ~/ai-env/bin/activate 2>/dev/null || python3 -m venv ~/ai-env && source ~/ai-env/bin/activate
+            pip install langchain llama-index
+            deactivate
+            print_status "LangChain & LlamaIndex installed!"
+            ;;
+        7)
+            print_info "Installing Jupyter Lab & Data Science stack..."
+            source ~/ai-env/bin/activate 2>/dev/null || python3 -m venv ~/ai-env && source ~/ai-env/bin/activate
+            pip install \
+                jupyterlab \
+                notebook \
+                ipywidgets \
+                matplotlib \
+                seaborn \
+                plotly \
+                scikit-learn \
+                pandas \
+                numpy \
+                scipy \
+                tensorboard \
+                datasets
+            deactivate
+            print_status "Data Science stack installed!"
+            ;;
+    esac
+done
+
+# ============================================================================
+# DEVELOPMENT TOOLS MENU
+# ============================================================================
+print_section "STEP 3: Development Tools Selection"
+
+dev_options=(
+    "Node.js + npm + nvm (Node Version Manager)"
+    "Global NPM tools (yarn, pm2, typescript, etc.)"
+    "Docker + Docker Compose (latest)"
+    "Docker development tools (hadolint, dive)"
+    "Python version managers (pyenv, poetry)"
+    "SDKMAN (Java, Maven, Gradle)"
+    "GitHub CLI (gh)"
+    "Database tools (PostgreSQL, Redis, MongoDB)"
+)
+
+echo "Select development tools to install (space-separated numbers):"
+for i in "${!dev_options[@]}"; do
+    echo "  $((i+1)). ${dev_options[$i]}"
+done
+echo ""
+read -p "Enter numbers (e.g., 1 2 3): " -a dev_choices
+
+for choice in "${dev_choices[@]}"; do
+    case $choice in
+        1)
+            print_info "Installing nvm and Node.js LTS..."
+            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            nvm install --lts
+            nvm use --lts
+            print_status "Node.js $(node -v) and npm $(npm -v) installed!"
+            ;;
+        2)
+            print_info "Installing global NPM tools..."
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            npm install -g \
+                yarn \
+                pnpm \
+                ts-node \
+                typescript \
+                nodemon \
+                pm2 \
+                eslint \
+                prettier \
+                http-server \
+                live-server
+            print_status "Global NPM tools installed!"
+            ;;
+        3)
+            print_info "Installing Docker..."
+            for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do
+                sudo apt-get remove -y $pkg 2>/dev/null || true
+            done
+            
+            sudo install -m 0755 -d /etc/apt/keyrings
+            sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+            sudo chmod a+r /etc/apt/keyrings/docker.asc
+            
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+              $(. /etc/os-release && echo "$UBUNTU_CODENAME") stable" | \
+              sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            
+            sudo apt update
+            sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+            sudo usermod -aG docker $USER
+            
+            print_info "Installing latest Docker Compose..."
+            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            
+            print_status "Docker and Docker Compose installed!"
+            ;;
+        4)
+            print_info "Installing Docker development tools..."
+            # hadolint
+            sudo wget -O /bin/hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+            sudo chmod +x /bin/hadolint
+            
+            # dive
+            wget https://github.com/wagoodman/dive/releases/download/v0.12.0/dive_0.12.0_linux_amd64.deb
+            sudo dpkg -i dive_*.deb
+            rm dive_*.deb
+            print_status "Docker development tools installed!"
+            ;;
+        5)
+            print_info "Installing pyenv and poetry..."
+            # pyenv
+            curl https://pyenv.run | bash
+            echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
+            echo 'command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
+            echo 'eval "$(pyenv init -)"' >> ~/.bashrc
+            
+            # poetry
+            curl -sSL https://install.python-poetry.org | python3 -
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+            print_status "pyenv and poetry installed!"
+            ;;
+        6)
+            print_info "Installing SDKMAN and Java..."
+            curl -s "https://get.sdkman.io" | bash
+            source "$HOME/.sdkman/bin/sdkman-init.sh"
+            sdk install java 17.0.10-tem
+            sdk install maven
+            sdk install gradle
+            print_status "SDKMAN, Java, Maven, Gradle installed!"
+            ;;
+        7)
+            print_info "Installing GitHub CLI..."
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt update
+            sudo apt install -y gh
+            print_status "GitHub CLI installed!"
+            ;;
+        8)
+            print_info "Installing databases..."
+            # PostgreSQL
+            sudo apt install -y postgresql postgresql-contrib
+            sudo service postgresql start
+            
+            # Redis
+            sudo apt install -y redis-server
+            sudo service redis-server start
+            
+            # MongoDB
+            wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | sudo apt-key add -
+            echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+            sudo apt update
+            sudo apt install -y mongodb-org
+            
+            print_status "Databases installed!"
+            ;;
+    esac
+done
+
+# ============================================================================
+# TERMINAL & PRODUCTIVITY MENU
+# ============================================================================
+print_section "STEP 4: Terminal & Productivity Tools Selection"
+
+terminal_options=(
+    "Oh My Zsh with plugins (zsh-autosuggestions, syntax-highlighting)"
+    "Advanced monitoring tools (btop, nvtop, glances)"
+    "Git enhancements (lazygit, git-extras)"
+    "Networking tools (httpie, jq, nmap)"
+    "WSL performance tweaks"
+)
+
+echo "Select terminal & productivity tools to install (space-separated numbers):"
+for i in "${!terminal_options[@]}"; do
+    echo "  $((i+1)). ${terminal_options[$i]}"
+done
+echo ""
+read -p "Enter numbers (e.g., 1 2 3): " -a term_choices
+
+for choice in "${term_choices[@]}"; do
+    case $choice in
+        1)
+            print_info "Installing Oh My Zsh..."
+            sudo apt install -y zsh
+            sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+            
+            # Install plugins
+            git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+            git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting
+            
+            # Update .zshrc to enable plugins
+            sed -i 's/plugins=(git)/plugins=(git zsh-autosuggestions zsh-syntax-highlighting)/' ~/.zshrc
+            
+            # Set Zsh as default shell
+            sudo chsh -s $(which zsh) $USER
+            print_status "Oh My Zsh installed! Will be active after restart."
+            ;;
+        2)
+            print_info "Installing monitoring tools..."
+            sudo apt install -y \
+                btop \
+                nvtop \
+                glances \
+                iotop \
+                iftop
+            
+            # Install nvtop for GPU monitoring
+            sudo apt install -y nvtop
+            
+            print_status "Monitoring tools installed!"
+            ;;
+        3)
+            print_info "Installing Git enhancements..."
+            sudo apt install -y git-extras
+            
+            # Install lazygit
+            sudo add-apt-repository ppa:lazygit-team/release -y
+            sudo apt update
+            sudo apt install -y lazygit
+            
+            print_status "Git tools installed!"
+            ;;
+        4)
+            print_info "Installing networking tools..."
+            sudo apt install -y \
+                httpie \
+                jq \
+                yq \
+                nmap \
+                netcat-traditional \
+                tcpdump \
+                wireshark-common
+            
+            print_status "Networking tools installed!"
+            ;;
+        5)
+            print_info "Applying WSL performance tweaks..."
+            
+            # Create .wslconfig instructions
+            cat > ~/WSL_SETUP.txt << 'EOF'
+===============================================
+WSL PERFORMANCE TWEAKS - READ THIS!
+===============================================
+
+1. Create a file at: C:\Users\<YourUsername>\.wslconfig
+2. Add this content:
+
+[wsl2]
+memory=16GB
+processors=8
+swap=8GB
+localhostForwarding=true
+
+3. Run in PowerShell: wsl --shutdown
+4. Restart WSL
+===============================================
+EOF
+            
+            # Add WSL-specific aliases
+            cat >> ~/.bashrc << 'EOF'
+
+# WSL specific aliases
+alias wsl-restart='cd ~ && cmd.exe /c wsl --shutdown'
+alias windows='cd /mnt/c/Users/$USER'
+alias chrome="/mnt/c/Program\ Files/Google/Chrome/Application/chrome.exe"
+alias code='cd $PWD && cmd.exe /c code .'
+EOF
+            
+            print_status "WSL tweaks applied! Check ~/WSL_SETUP.txt for Windows-side config."
+            ;;
+    esac
+done
+
+# ============================================================================
+# CREATE DIRECTORIES AND ALIASES
+# ============================================================================
+print_section "STEP 5: Finalizing Setup"
+
+print_info "Creating project directories..."
 mkdir -p ~/models
-mkdir -p ~/projects/heretic
+mkdir -p ~/projects
 mkdir -p ~/downloads
 mkdir -p ~/cache/huggingface
+mkdir -p ~/docker
 
-# Set up Hugging Face cache
-echo "🔧 Configuring Hugging Face cache..."
-echo "export HF_HOME=~/cache/huggingface" >> ~/.bashrc
-
-# Create convenience aliases
-echo "⚙️  Adding aliases to .bashrc..."
+print_info "Setting up environment variables and aliases..."
 cat >> ~/.bashrc << 'EOF'
 
-# AI Environment Aliases
+# ===== AI ENVIRONMENT SETTINGS =====
+export HF_HOME=~/cache/huggingface
+export OLLAMA_MODELS=~/models/ollama
+
+# AI Aliases
 alias ai-env='source ~/ai-env/bin/activate'
 alias ollama-run='ollama run qwen2.5:7b-instruct-q4_k_m'
 alias heretic-run='source ~/ai-env/bin/activate && heretic'
 alias models='cd ~/models'
 alias projects='cd ~/projects'
-alias hf-download='huggingface-cli download --local-dir-use-symlinks False --resume-download'
 
 # Memory monitoring
 alias mem='free -h'
 alias gpu='nvidia-smi'
 alias top-ai='watch -n 2 nvidia-smi'
 
-# WSL specific
-alias wsl-restart='cd ~ && cmd.exe /c wsl --shutdown'
+# Docker aliases
+alias d='docker'
+alias dc='docker-compose'
+alias dps='docker ps'
+alias di='docker images'
+
+# Git aliases
+alias gs='git status'
+alias ga='git add'
+alias gc='git commit'
+alias gp='git push'
+alias gl='git log --oneline --graph'
 EOF
 
-# Create a test script
-cat > ~/test_heretic.py << 'EOF'
+# ============================================================================
+# CREATE TEST SCRIPTS
+# ============================================================================
+print_info "Creating test scripts..."
+
+# Python test script
+cat > ~/test_ai.py << 'EOF'
 #!/usr/bin/env python3
-print("Testing Heretic installation...")
+print("Testing AI environment...")
 try:
     import torch
-    print(f"✅ PyTorch {torch.__version__} installed")
+    print(f"✅ PyTorch {torch.__version__}")
     print(f"✅ CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"✅ GPU: {torch.cuda.get_device_name(0)}")
+    
+    import transformers
+    print(f"✅ Transformers {transformers.__version__}")
+    
+    import accelerate
+    print(f"✅ Accelerate installed")
+    
+    print("\n🎉 AI environment is ready!")
 except ImportError as e:
     print(f"❌ Error: {e}")
 EOF
+chmod +x ~/test_ai.py
 
-chmod +x ~/test_heretic.py
+# Docker test script
+cat > ~/test_docker.sh << 'EOF'
+#!/bin/bash
+echo "Testing Docker installation..."
+if command -v docker &> /dev/null; then
+    echo "✅ Docker installed: $(docker --version)"
+    echo "✅ Docker Compose: $(docker-compose --version 2>/dev/null || echo 'Not installed')"
+else
+    echo "❌ Docker not found"
+fi
+EOF
+chmod +x ~/test_docker.sh
 
-# Final message
+# ============================================================================
+# FINAL SUMMARY
+# ============================================================================
+clear
+print_section "🎉 INSTALLATION COMPLETE!"
+
+echo -e "${GREEN}What was installed:${NC}"
+for choice in "${selected_ai[@]}"; do
+    echo "  ✓ ${ai_options[$((choice-1))]}"
+done
+for choice in "${dev_choices[@]}"; do
+    echo "  ✓ ${dev_options[$((choice-1))]}"
+done
+for choice in "${term_choices[@]}"; do
+    echo "  ✓ ${terminal_options[$((choice-1))]}"
+done
+
 echo ""
-echo "╔═══════════════════════════════════════════════════════════╗"
-echo "║                    🎉 INSTALL COMPLETE! 🎉               ║"
-echo "╚═══════════════════════════════════════════════════════════╝"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
+echo -e "${YELLOW}Quick Start Commands:${NC}"
+echo "  source ~/.bashrc     - Reload your shell configuration"
+echo "  ai-env              - Activate Python AI environment"
+echo "  ollama-run          - Run Qwen model with Ollama"
+echo "  ~/test_ai.py        - Test AI environment"
+echo "  ~/test_docker.sh    - Test Docker installation"
+echo "  mem/gpu/top-ai      - Monitor system resources"
 echo ""
-echo "📌 What's installed:"
-echo "   - zstd (compression tool) 👈 Now included!"
-echo "   - Ollama with Qwen2.5 7B model"
-echo "   - Python AI environment with PyTorch, Transformers, Heretic"
-echo "   - Development tools and aliases"
+echo -e "${YELLOW}Important Notes:${NC}"
+if [[ " ${term_choices[@]} " =~ " 1 " ]]; then
+    echo "  • Zsh is now your default shell (restart terminal to activate)"
+fi
+if [[ " ${dev_choices[@]} " =~ " 3 " ]]; then
+    echo "  • You need to log out and back in for Docker permissions to take effect"
+    echo "    Or run: newgrp docker"
+fi
+if [[ -f ~/WSL_SETUP.txt ]]; then
+    echo "  • Check ~/WSL_SETUP.txt for Windows-side WSL configuration"
+fi
 echo ""
-echo "🚀 Quick Start Commands:"
-echo "   ai-env         - Activate Python AI environment"
-echo "   ollama-run     - Run Qwen model with Ollama"
-echo "   heretic-run    - Run Heretic (after activating env)"
-echo "   mem            - Check memory usage"
-echo "   gpu            - Check GPU status"
+echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
 echo ""
-echo "📂 Project directories:"
-echo "   ~/models/      - Store downloaded models"
-echo "   ~/projects/    - Your AI projects"
-echo ""
-echo "🔄 To apply aliases immediately, run:"
-echo "   source ~/.bashrc"
-echo ""
-echo "✅ Setup complete! You can now use Ollama directly:"
-echo "   ollama run qwen2.5:7b-instruct-q4_k_m"
+echo -e "${GREEN}✅ Setup complete! Enjoy your WSL AI development environment!${NC}"
 echo ""
