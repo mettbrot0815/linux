@@ -3,6 +3,7 @@
 # ============================================================================
 # WSL2 Ultimate AI & Development Environment Setup Script
 # Complete Version - Ubuntu 24.04 (Noble) compatible
+# All paths configured; clear descriptions for every tool.
 # ============================================================================
 
 set -e
@@ -62,23 +63,26 @@ sudo apt install -y \
 print_status "Base system packages installed"
 
 # ============================================================================
-# STEP 2: AI Tools Selection
+# STEP 2: AI Tools Selection (with clear descriptions)
 # ============================================================================
 print_section "STEP 2: AI Tools Selection"
 
+echo -e "${CYAN}Here's what each tool does:${NC}"
 ai_options=(
-    "Ollama + Qwen2.5 7B model"
-    "Python AI Virtual Environment (PyTorch, Transformers)"
-    "Heretic with fixed dependencies"
-    "llama.cpp"
-    "Text Generation WebUI (Oobabooga)"
-    "Vector Databases (ChromaDB, Qdrant)"
-    "LangChain & LlamaIndex"
-    "Jupyter Lab & Data Science Stack"
+    "Ollama + Qwen2.5 7B model – Local LLM runner, downloads 4.7GB model, stores in ~/models/ollama"
+    "Python AI Virtual Environment – Installs PyTorch, Transformers, etc. in ~/ai-env"
+    "Heretic – Censorship removal tool (fixed deps). Model download script at ~/download_model.py"
+    "llama.cpp – C++ inference for GGUF models, compiled to ~/llama.cpp"
+    "Text Generation WebUI – Oobabooga's web interface for LLMs, runs in background"
+    "Vector Databases – ChromaDB & Qdrant clients (for RAG), installed in AI environment"
+    "LangChain & LlamaIndex – Frameworks for building LLM apps, installed in AI environment"
+    "Jupyter Lab & Data Science – Full data science stack (pandas, matplotlib, etc.) in AI environment"
 )
 
 echo "Select AI tools to install (space-separated numbers):"
-for i in "${!ai_options[@]}"; do echo "  $((i+1)). ${ai_options[$i]}"; done
+for i in "${!ai_options[@]}"; do
+    printf "  %d. %s\n" $((i+1)) "${ai_options[$i]}"
+done
 echo ""
 read -p "Enter numbers (e.g., 1 2 3): " -a ai_choices
 
@@ -264,7 +268,7 @@ for choice in "${dev_choices[@]}"; do
             print_info "Installing databases..."
             sudo apt install -y postgresql postgresql-contrib && sudo systemctl start postgresql
             sudo apt install -y redis-server && sudo systemctl start redis-server
-            # MongoDB for 24.04 may need different steps; using official repo
+            # MongoDB 7.0 for Ubuntu 22.04 (works on 24.04)
             wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | sudo apt-key add -
             echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
             sudo apt update && sudo apt install -y mongodb-org
@@ -311,7 +315,7 @@ for choice in "${term_choices[@]}"; do
         3)
             print_info "Installing Git enhancements..."
             sudo apt install -y git-extras
-            # Install lazygit via direct download (no PPA for Noble)
+            # Install lazygit directly (no PPA for Noble)
             LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
             curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
             tar xf lazygit.tar.gz lazygit
