@@ -3,7 +3,7 @@
 # ============================================================================
 # WSL2 Ultimate AI & Development Environment Setup Script
 # Final Version – Ubuntu 24.04 (Noble) compatible
-# All paths configured; clear descriptions; Heretic dependencies pinned.
+# Includes Ollama + both censored and uncensored Qwen2.5 models
 # ============================================================================
 
 set -e  # Exit on error
@@ -38,8 +38,8 @@ ask_yes_no() {
 clear
 echo -e "${PURPLE}"
 echo "╔═══════════════════════════════════════════════════════════╗"
-echo "║     WSL2 Ultimate AI & Development Environment Setup     ║"
-echo "║                  FINAL VERSION                           ║"
+echo "║     WSL2 Ultimate AI & Development Environment Setup     ║
+echo "║                  FINAL VERSION                           ║
 echo "╚═══════════════════════════════════════════════════════════╝${NC}\n"
 
 print_warning "This script will install various tools on your fresh WSL Ubuntu."
@@ -63,20 +63,21 @@ sudo apt install -y \
 print_status "Base system packages installed"
 
 # ============================================================================
-# STEP 2: AI Tools Selection (with clear descriptions)
+# STEP 2: AI Tools Selection (with abliterated model)
 # ============================================================================
 print_section "STEP 2: AI Tools Selection"
 
 echo -e "${CYAN}Here's what each tool does:${NC}"
 ai_options=(
-    "Ollama + Qwen2.5 7B model – Local LLM runner, downloads 4.7GB model, stores in ~/models/ollama"
-    "Python AI Virtual Environment – Installs PyTorch, Transformers, etc. in ~/ai-env"
-    "Heretic – Censorship removal tool (fixed deps). Model download script at ~/download_model.py"
+    "Ollama + Qwen2.5 7B instruct (censored) – official instruct model, 4.7GB"
+    "Ollama + Qwen2.5 7B abliterated (uncensored) – huihui_ai's uncensored version, 4.7GB"
+    "Python AI Virtual Environment – PyTorch, Transformers, etc. in ~/ai-env"
+    "Heretic – Censorship removal tool (fixed deps). Download script at ~/download_model.py"
     "llama.cpp – C++ inference for GGUF models, compiled to ~/llama.cpp"
-    "Text Generation WebUI – Oobabooga's web interface for LLMs, runs in background"
-    "Vector Databases – ChromaDB & Qdrant clients (for RAG), installed in AI environment"
-    "LangChain & LlamaIndex – Frameworks for building LLM apps, installed in AI environment"
-    "Jupyter Lab & Data Science – Full data science stack (pandas, matplotlib, etc.) in AI environment"
+    "Text Generation WebUI – Oobabooga's web interface for LLMs"
+    "Vector Databases – ChromaDB & Qdrant clients (for RAG)"
+    "LangChain & LlamaIndex – Frameworks for building LLM apps"
+    "Jupyter Lab & Data Science – pandas, matplotlib, etc. in AI environment"
 )
 
 echo "Select AI tools to install (space-separated numbers):"
@@ -96,16 +97,28 @@ done
 for choice in "${selected_ai[@]}"; do
     case $choice in
         1)
-            print_info "Installing Ollama..."
+            print_info "Installing Ollama and pulling censored Qwen2.5 instruct model..."
             curl -fsSL https://ollama.com/install.sh | sh
             mkdir -p ~/models/ollama
             echo "export OLLAMA_MODELS=~/models/ollama" >> ~/.bashrc
             ollama serve > /dev/null 2>&1 &
             sleep 5
             ollama pull qwen2.5:7b-instruct-q4_k_m &
-            print_status "Ollama installed, model downloading in background"
+            print_status "Ollama installed, censored model downloading in background"
+            echo "alias qwen-censored='ollama run qwen2.5:7b-instruct-q4_k_m'" >> ~/.bashrc
             ;;
         2)
+            print_info "Installing Ollama and pulling uncensored (abliterated) Qwen2.5 model..."
+            curl -fsSL https://ollama.com/install.sh | sh
+            mkdir -p ~/models/ollama
+            echo "export OLLAMA_MODELS=~/models/ollama" >> ~/.bashrc
+            ollama serve > /dev/null 2>&1 &
+            sleep 5
+            ollama pull huihui_ai/qwen2.5-abliterate:7b &
+            print_status "Ollama installed, uncensored model downloading in background"
+            echo "alias qwen-uncensored='ollama run huihui_ai/qwen2.5-abliterate:7b'" >> ~/.bashrc
+            ;;
+        3)
             print_info "Creating Python AI virtual environment..."
             python3 -m venv ~/ai-env
             source ~/ai-env/bin/activate
@@ -114,15 +127,13 @@ for choice in "${selected_ai[@]}"; do
             deactivate
             print_status "AI environment created at ~/ai-env"
             ;;
-        3)
+        4)
             print_info "Installing Heretic with pinned dependencies..."
             python3 -m venv ~/heretic-env
             source ~/heretic-env/bin/activate
-            # Pin exact versions to avoid conflicts
             pip install "huggingface-hub==0.24.0" "transformers==4.44.2"
             pip install torch --index-url https://download.pytorch.org/whl/cu124
             pip install accelerate bitsandbytes heretic-llm
-            # Create model download script (points to existing download if already done)
             cat > ~/download_model.py << 'EOF'
 from huggingface_hub import snapshot_download
 import os
@@ -142,9 +153,9 @@ EOF
             chmod +x ~/download_model.py
             echo "alias heretic-run='source ~/heretic-env/bin/activate && heretic --model ~/models/qwen2.5-7b --quantization bnb_4bit'" >> ~/.bashrc
             deactivate
-            print_status "Heretic installed. Run 'python3 ~/download_model.py' to download model (if not already present)"
+            print_status "Heretic installed. Run 'python3 ~/download_model.py' to download base model"
             ;;
-        4)
+        5)
             print_info "Installing llama.cpp..."
             git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp
             cd ~/llama.cpp
@@ -152,7 +163,7 @@ EOF
             cd ~
             print_status "llama.cpp installed"
             ;;
-        5)
+        6)
             print_info "Installing Text Generation WebUI..."
             if [ -d ~/text-generation-webui ]; then
                 cd ~/text-generation-webui && git pull
@@ -164,21 +175,21 @@ EOF
             cd ~
             print_status "Text Generation WebUI started (background)"
             ;;
-        6)
+        7)
             print_info "Installing vector databases..."
             source ~/ai-env/bin/activate 2>/dev/null || python3 -m venv ~/ai-env && source ~/ai-env/bin/activate
             pip install chromadb qdrant-client
             deactivate
             print_status "Vector DB clients installed"
             ;;
-        7)
+        8)
             print_info "Installing LangChain & LlamaIndex..."
             source ~/ai-env/bin/activate 2>/dev/null || python3 -m venv ~/ai-env && source ~/ai-env/bin/activate
             pip install langchain llama-index
             deactivate
             print_status "LangChain & LlamaIndex installed"
             ;;
-        8)
+        9)
             print_info "Installing Jupyter Lab & Data Science stack..."
             source ~/ai-env/bin/activate 2>/dev/null || python3 -m venv ~/ai-env && source ~/ai-env/bin/activate
             pip install jupyterlab notebook ipywidgets matplotlib seaborn plotly scikit-learn pandas numpy scipy tensorboard datasets
@@ -189,7 +200,7 @@ EOF
 done
 
 # ============================================================================
-# STEP 3: Development Tools Selection
+# STEP 3: Development Tools Selection (unchanged)
 # ============================================================================
 print_section "STEP 3: Development Tools Selection"
 
@@ -471,7 +482,6 @@ echo "export HF_HOME=~/cache/huggingface" >> ~/.bashrc
 # Common aliases (if not already there)
 cat >> ~/.bashrc << 'EOF'
 alias ai-env='source ~/ai-env/bin/activate'
-alias ollama-run='ollama run qwen2.5:7b-instruct-q4_k_m'
 alias mem='free -h'
 alias gpu='nvidia-smi'
 alias top-ai='watch -n 2 nvidia-smi'
@@ -522,9 +532,10 @@ echo ""
 echo -e "${YELLOW}Quick Start:${NC}"
 echo "  source ~/.bashrc"
 echo "  ai-env                     - Activate Python AI environment"
-echo "  ollama-run                 - Run Qwen with Ollama"
+echo "  qwen-censored              - Run censored Qwen2.5 (if installed)"
+echo "  qwen-uncensored            - Run uncensored Qwen2.5 (if installed)"
 echo "  ~/test_ai.py               - Verify PyTorch & GPU"
-echo "  python3 ~/download_model.py - Download model for Heretic (if selected)"
+echo "  python3 ~/download_model.py - Download base model for Heretic (if selected)"
 echo "  heretic-run                - Run Heretic (after model download)"
 echo "  pentestagent / pentagi / hackerai / hexstrike - Run security tools"
 echo ""
