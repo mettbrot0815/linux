@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# WSL2 Ultimate AI & Development Environment Setup Script
+# WSL2 Ultimate AI & Development Environment Setup Script - FIXED VERSION
 # Run this AFTER your fresh Ubuntu installation
 
 set -e  # Exit on error
@@ -60,37 +60,12 @@ ask_yes_no() {
     done
 }
 
-# Function to show menu and get selections
-show_menu() {
-    local title=$1
-    shift
-    local options=("$@")
-    local selections=()
-    
-    echo -e "\n${CYAN}$title${NC}"
-    echo "Use spacebar to toggle, Enter to confirm:"
-    
-    for i in "${!options[@]}"; do
-        echo "  $((i+1)). ${options[$i]}"
-    done
-    
-    read -p "Enter numbers (e.g., 1 2 3): " -a choices
-    
-    for choice in "${choices[@]}"; do
-        if [[ $choice =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#options[@]})); then
-            selections+=("${options[$((choice-1))]}")
-        fi
-    done
-    
-    echo "${selections[@]}"
-}
-
 # Welcome screen
 clear
 echo -e "${PURPLE}"
 echo "╔═══════════════════════════════════════════════════════════╗"
 echo "║     WSL2 Ultimate AI & Development Environment Setup     ║"
-echo "║                     Interactive Installer                 ║"
+echo "║                    FIXED VERSION                         ║"
 echo "╚═══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
@@ -134,9 +109,11 @@ sudo apt install -y \
     unzip \
     zip \
     gpg \
-    tree
+    tree \
+    mousepad \
+    thunar
 
-print_status "Base system packages installed!"
+print_status "Base system packages installed! (Including mousepad and thunar)"
 
 # ============================================================================
 # AI TOOLS MENU
@@ -146,6 +123,7 @@ print_section "STEP 2: AI Tools Selection"
 ai_options=(
     "Ollama + Qwen2.5 7B model (4.7GB download)"
     "Python AI Virtual Environment (PyTorch, Transformers, etc.)"
+    "Heretic with fixed dependencies (huggingface-hub 0.24.0)"
     "llama.cpp (for GGUF model work)"
     "Text Generation WebUI (Oobabooga)"
     "Vector Databases (ChromaDB, Qdrant)"
@@ -189,8 +167,6 @@ for choice in "${selected_ai[@]}"; do
                 transformers \
                 accelerate \
                 bitsandbytes \
-                huggingface-hub \
-                heretic-llm \
                 ipython \
                 sentencepiece \
                 protobuf
@@ -198,6 +174,53 @@ for choice in "${selected_ai[@]}"; do
             print_status "Python AI environment created at ~/ai-env!"
             ;;
         3)
+            print_info "Installing Heretic with fixed dependencies..."
+            
+            # Create dedicated Heretic environment
+            python3 -m venv ~/heretic-env
+            source ~/heretic-env/bin/activate
+            
+            # Install specific compatible versions
+            pip install --upgrade pip
+            pip install "huggingface-hub[cli]==0.24.0"
+            pip install transformers==4.44.2
+            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+            pip install accelerate bitsandbytes
+            pip install heretic-llm
+            
+            # Create download script
+            cat > ~/download_model.py << 'EOF'
+#!/usr/bin/env python3
+from huggingface_hub import snapshot_download
+import os
+import time
+
+model_id = "Qwen/Qwen2.5-7B-Instruct"
+local_dir = os.path.expanduser("~/models/qwen2.5-7b")
+
+print(f"📥 Downloading {model_id} to {local_dir}")
+print("This will take several hours at 1MB/s...")
+
+start_time = time.time()
+snapshot_download(
+    repo_id=model_id,
+    local_dir=local_dir,
+    local_dir_use_symlinks=False,
+    resume_download=True,
+    max_workers=4,
+)
+elapsed = time.time() - start_time
+print(f"✅ Download complete in {elapsed/60:.1f} minutes!")
+EOF
+            chmod +x ~/download_model.py
+            
+            # Add alias
+            echo "alias heretic-run='source ~/heretic-env/bin/activate && heretic --model ~/models/qwen2.5-7b --quantization bnb_4bit'" >> ~/.bashrc
+            
+            deactivate
+            print_status "Heretic installed! Use 'python ~/download_model.py' to get the model"
+            ;;
+        4)
             print_info "Installing llama.cpp..."
             git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp
             cd ~/llama.cpp
@@ -205,7 +228,7 @@ for choice in "${selected_ai[@]}"; do
             cd ~
             print_status "llama.cpp installed!"
             ;;
-        4)
+        5)
             print_info "Installing Text Generation WebUI..."
             git clone https://github.com/oobabooga/text-generation-webui ~/text-generation-webui
             cd ~/text-generation-webui
@@ -213,21 +236,21 @@ for choice in "${selected_ai[@]}"; do
             cd ~
             print_status "Text Generation WebUI installed!"
             ;;
-        5)
+        6)
             print_info "Installing vector databases..."
             source ~/ai-env/bin/activate 2>/dev/null || python3 -m venv ~/ai-env && source ~/ai-env/bin/activate
             pip install chromadb qdrant-client
             deactivate
             print_status "Vector database clients installed!"
             ;;
-        6)
+        7)
             print_info "Installing LangChain & LlamaIndex..."
             source ~/ai-env/bin/activate 2>/dev/null || python3 -m venv ~/ai-env && source ~/ai-env/bin/activate
             pip install langchain llama-index
             deactivate
             print_status "LangChain & LlamaIndex installed!"
             ;;
-        7)
+        8)
             print_info "Installing Jupyter Lab & Data Science stack..."
             source ~/ai-env/bin/activate 2>/dev/null || python3 -m venv ~/ai-env && source ~/ai-env/bin/activate
             pip install \
@@ -435,9 +458,6 @@ for choice in "${term_choices[@]}"; do
                 iotop \
                 iftop
             
-            # Install nvtop for GPU monitoring
-            sudo apt install -y nvtop
-            
             print_status "Monitoring tools installed!"
             ;;
         3)
@@ -495,6 +515,8 @@ alias wsl-restart='cd ~ && cmd.exe /c wsl --shutdown'
 alias windows='cd /mnt/c/Users/$USER'
 alias chrome="/mnt/c/Program\ Files/Google/Chrome/Application/chrome.exe"
 alias code='cd $PWD && cmd.exe /c code .'
+alias mousepad='mousepad'
+alias thunar='thunar'
 EOF
             
             print_status "WSL tweaks applied! Check ~/WSL_SETUP.txt for Windows-side config."
@@ -524,7 +546,6 @@ export OLLAMA_MODELS=~/models/ollama
 # AI Aliases
 alias ai-env='source ~/ai-env/bin/activate'
 alias ollama-run='ollama run qwen2.5:7b-instruct-q4_k_m'
-alias heretic-run='source ~/ai-env/bin/activate && heretic'
 alias models='cd ~/models'
 alias projects='cd ~/projects'
 
@@ -545,6 +566,10 @@ alias ga='git add'
 alias gc='git commit'
 alias gp='git push'
 alias gl='git log --oneline --graph'
+
+# GUI apps
+alias edit='mousepad'
+alias files='thunar'
 EOF
 
 # ============================================================================
@@ -611,9 +636,13 @@ echo -e "${YELLOW}Quick Start Commands:${NC}"
 echo "  source ~/.bashrc     - Reload your shell configuration"
 echo "  ai-env              - Activate Python AI environment"
 echo "  ollama-run          - Run Qwen model with Ollama"
+echo "  heretic-run         - Run Heretic (if installed)"
+echo "  python ~/download_model.py - Download model for Heretic"
 echo "  ~/test_ai.py        - Test AI environment"
 echo "  ~/test_docker.sh    - Test Docker installation"
 echo "  mem/gpu/top-ai      - Monitor system resources"
+echo "  edit                - Open mousepad"
+echo "  files               - Open thunar file manager"
 echo ""
 echo -e "${YELLOW}Important Notes:${NC}"
 if [[ " ${term_choices[@]} " =~ " 1 " ]]; then
