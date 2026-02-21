@@ -1,601 +1,451 @@
 #!/bin/bash
-
-# ============================================================================
-# WSL2 Ultimate AI & Development Environment – COMPLETE EDITION
-# - Smart Ollama installer (checks for updates)
-# - Model selection menu for uncensored models
-# - All dev tools, terminal tools, security tools
-# - Heretic optional
-# ============================================================================
+# ultimate-local-llm.sh - 100% LOCAL LLM setup
+# No cloud, no Docker, just pure local models
 
 set -e
 
-# Colors
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; PURPLE='\033[0;35m'; CYAN='\033[0;36m'; NC='\033[0m'
+# ==================== CONFIGURATION ====================
+MODELS_DIR="$HOME/local-llm-models"
+CONFIG_DIR="$HOME/.config/local-llm"
+BIN_DIR="$HOME/.local/bin"
+LOG_FILE="$HOME/local-llm-setup-$(date +%Y%m%d-%H%M%S).log"
 
-print_status() { echo -e "${GREEN}[✓]${NC} $1"; }
-print_info() { echo -e "${BLUE}[i]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
-print_error() { echo -e "${RED}[✗]${NC} $1"; }
-print_section() {
-    echo -e "\n${PURPLE}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}  $1${NC}"
-    echo -e "${PURPLE}═══════════════════════════════════════════════════════════${NC}\n"
-}
+# ==================== COLOR CODES ====================
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
 
-ask_yes_no() {
-    local question=$1 default=${2:-n} answer
-    while true; do
-        if [[ $default == "y" ]]; then
-            read -p "$question [Y/n]: " answer
-            answer=${answer:-y}
-        else
-            read -p "$question [y/N]: " answer
-            answer=${answer:-n}
-        fi
-        case $answer in [Yy]*) return 0;; [Nn]*) return 1;; *) echo "Please answer yes or no.";; esac
-    done
-}
+# ==================== LOGGING ====================
+exec > >(tee -a "$LOG_FILE") 2>&1
 
+# ==================== BANNER ====================
 clear
 echo -e "${PURPLE}"
-echo "╔═══════════════════════════════════════════════════════════╗"
-echo "║     WSL2 Ultimate AI & Development Environment           ║"
-echo "║              COMPLETE EDITION with Model Selector        ║"
-echo "╚═══════════════════════════════════════════════════════════╝${NC}\n"
+echo '╔═══════════════════════════════════════════════════════════════╗'
+echo '║              PURE LOCAL LLM ENVIRONMENT SETUP                 ║'
+echo '║                    No Cloud - No BS                            ║'
+echo '╚═══════════════════════════════════════════════════════════════╝'
+echo -e "${NC}"
+echo ""
 
-# ============================================================================
-# PART 1: BASE SYSTEM
-# ============================================================================
-print_section "STEP 1: Installing Base System Packages"
+# ==================== HELPER FUNCTIONS ====================
+print_step() { echo -e "\n${BLUE}🔧 $1${NC}"; }
+print_success() { echo -e "${GREEN}✅ $1${NC}"; }
+print_warning() { echo -e "${YELLOW}⚠️ $1${NC}"; }
 
-print_info "Updating system packages..."
-sudo apt update || true
-
-print_info "Installing essential base tools..."
-sudo apt install -y \
-    python3-pip python3-venv python3-full git curl wget build-essential cmake \
-    htop neofetch nano tmux zstd ca-certificates gnupg lsb-release \
-    software-properties-common apt-transport-https unzip zip gpg tree \
-    mousepad thunar bc
-
-print_status "Base system packages installed"
-
-# ============================================================================
-# PART 2: OLLAMA + MODEL SELECTOR (SMART)
-# ============================================================================
-print_section "STEP 2: Ollama + Uncensored Model Selector"
-
-# Check/Install Ollama
-if command -v ollama &> /dev/null; then
-    print_status "Ollama is already installed"
-    CURRENT_VERSION=$(ollama --version 2>/dev/null | head -1 | cut -d' ' -f2 || echo "unknown")
-    print_info "Current version: $CURRENT_VERSION"
+# ==================== CREATE DIRECTORY STRUCTURE ====================
+create_dirs() {
+    print_step "Creating local LLM directories..."
     
-    if ask_yes_no "Check for Ollama updates?" "n"; then
-        print_info "Updating Ollama..."
-        curl -fsSL https://ollama.com/install.sh | sh
-    fi
-else
-    print_warning "Ollama not found. Installing now..."
+    mkdir -p "$MODELS_DIR"/{ollama,llamacpp,gguf,temp}
+    mkdir -p "$BIN_DIR"
+    mkdir -p "$CONFIG_DIR"
+    
+    print_success "Directory structure created"
+}
+
+# ==================== INSTALL OLLAMA (PURE LOCAL) ====================
+install_ollama() {
+    print_step "Installing Ollama for local models..."
+    
+    # Download and install Ollama
     curl -fsSL https://ollama.com/install.sh | sh
+    
+    # Stop any running Ollama
+    sudo systemctl stop ollama 2>/dev/null || true
+    
+    # Configure Ollama for PURE LOCAL use (no telemetry, no internet)
+    sudo mkdir -p /etc/ollama
+    
+    # Create config that disables all network features
+    sudo tee /etc/ollama/config.json > /dev/null <<'EOF'
+{
+    "disable_telemetry": true,
+    "disable_update_check": true,
+    "disable_metrics": true,
+    "read_only": false,
+    "models_dir": "'$HOME'/local-llm-models/ollama",
+    "keep_alive": "24h",
+    "num_parallel": 1,
+    "max_loaded_models": 1
+}
+EOF
+    
+    # Modify service to be completely local
+    sudo tee /etc/systemd/system/ollama.service > /dev/null <<'EOF'
+[Unit]
+Description=Ollama Service - Local Only
+After=network.target
+Before=network-online.target
+Wants=network.target
+
+[Service]
+ExecStart=/usr/local/bin/ollama serve
+User=%USER%
+Group=%USER%
+Restart=always
+RestartSec=3
+Environment="OLLAMA_HOST=127.0.0.1"
+Environment="OLLAMA_MODELS=/home/%USER%/local-llm-models/ollama"
+Environment="OLLAMA_KEEP_ALIVE=24h"
+Environment="OLLAMA_NUM_PARALLEL=1"
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+Environment="OLLAMA_DISABLE_TELEMETRY=1"
+Environment="OLLAMA_NO_UPDATE_CHECK=1"
+
+[Install]
+WantedBy=default.target
+EOF
+    
+    # Replace %USER% with actual username
+    sudo sed -i "s/%USER%/$USER/g" /etc/systemd/system/ollama.service
+    
+    # Reload and start
+    sudo systemctl daemon-reload
+    sudo systemctl enable ollama
+    sudo systemctl start ollama
+    
+    print_success "Ollama installed in LOCAL-ONLY mode"
+}
+
+# ==================== INSTALL LLAMA.CPP (THE REAL DEAL) ====================
+install_llamacpp() {
+    print_step "Installing llama.cpp for maximum local control..."
+    
+    # Clone and build
+    cd /tmp
+    git clone https://github.com/ggerganov/llama.cpp.git
+    cd llama.cpp
+    make clean
+    make -j$(nproc)
+    
+    # Install to local bin
+    cp main server llama-quantize llama-perplexity embedding "$BIN_DIR/"
+    cp -r models "$MODELS_DIR/llamacpp-models" 2>/dev/null || true
+    
+    # Create symlinks
+    ln -sf "$BIN_DIR/main" "$BIN_DIR/llama-run"
+    ln -sf "$BIN_DIR/server" "$BIN_DIR/llama-serve"
+    
+    cd ~
+    rm -rf /tmp/llama.cpp
+    
+    print_success "llama.cpp installed - FULL local control"
+}
+
+# ==================== DOWNLOAD SOME BASIC MODELS (OPTIONAL) ====================
+download_basic_models() {
+    print_step "Do you want to download some basic local models? (y/n)"
+    read -r download_choice
+    
+    if [[ "$download_choice" =~ ^[Yy]$ ]]; then
+        print_step "Downloading tiny local models to get started..."
+        
+        # Tiny models that run anywhere (no GPU needed)
+        echo -e "${CYAN}📥 Downloading TinyLlama (1.1B) - runs on ANY hardware...${NC}"
+        cd "$MODELS_DIR/gguf"
+        wget -O tinyllama-1.1b.Q4_K_M.gguf https://huggingface.co/TheBloke/TinyLlama-1.1B-GGUF/resolve/main/tinyllama-1.1b.Q4_K_M.gguf
+        
+        echo -e "${CYAN}📥 Downloading Phi-2 (2.7B) - smart small model...${NC}"
+        wget -O phi-2.Q4_K_M.gguf https://huggingface.co/TheBloke/phi-2-GGUF/resolve/main/phi-2.Q4_K_M.gguf
+        
+        # Ollama will pull models on demand when you run them
+        echo -e "${YELLOW}Note: Other models will be downloaded when you first run them${NC}"
+    else
+        print_warning "Skipping model downloads - you can download later"
+    fi
+}
+
+# ==================== CREATE LOCAL MODEL RUNNERS ====================
+create_runners() {
+    print_step "Creating local model runner scripts..."
+    
+    # Create runner for GGUF models
+    cat > "$BIN_DIR/run-gguf" << 'EOF'
+#!/bin/bash
+# Simple GGUF model runner using llama.cpp
+
+MODEL_DIR="$HOME/local-llm-models/gguf"
+BIN_DIR="$HOME/.local/bin"
+
+if [ $# -lt 1 ]; then
+    echo "Usage: run-gguf <model-file> [prompt]"
+    echo ""
+    echo "Available models:"
+    ls -1 "$MODEL_DIR"/*.gguf 2>/dev/null | xargs -n1 basename || echo "No models found"
+    exit 1
 fi
 
-# Ensure Ollama is running
-if ! pgrep -f "ollama serve" > /dev/null; then
-    print_info "Starting Ollama service..."
-    ollama serve > /dev/null 2>&1 &
-    sleep 3
+MODEL="$MODEL_DIR/$1"
+if [ ! -f "$MODEL" ]; then
+    echo "Model not found: $MODEL"
+    exit 1
 fi
 
-# Show installed models
-echo ""
-print_info "Currently installed models:"
-ollama list 2>/dev/null || echo "  No models installed yet."
-
-# Model selection menu
-echo ""
-echo -e "${CYAN}Available abliterated (uncensored) models:${NC}"
-echo "  1. huihui_ai/qwen2.5-abliterate:7b    (7B, ~4.7GB)  – BEST FOR RTX 3060"
-echo "  2. huihui_ai/qwen2.5-abliterate:1.5b  (1.5B, ~1.1GB) – Faster, less capable"
-echo "  3. huihui_ai/qwen2.5-abliterate:0.5b  (0.5B, ~398MB) – Tiny, for testing"
-echo "  4. huihui_ai/qwen2.5-abliterate:14b   (14B, ~9.0GB)  – Bigger, may be slow"
-echo "  5. huihui_ai/qwen2.5-vl-abliterated:7b (7B, ~6.0GB)  – Vision model"
-echo "  6. Skip downloading any model now"
-echo "  7. Enter custom model name"
+PROMPT="${2:-'Hello, how are you?'}"
+echo "🚀 Running $1 locally..."
 echo ""
 
-read -p "Choose model to download [1-7]: " model_choice
+"$BIN_DIR/llama-run" -m "$MODEL" -p "$PROMPT" -n 512 -t 4
+EOF
+    
+    # Create Ollama runner with local-only focus
+    cat > "$BIN_DIR/ollama-local" << 'EOF'
+#!/bin/bash
+# Local-only Ollama wrapper
 
-case $model_choice in
-    1) MODEL="huihui_ai/qwen2.5-abliterate:7b" ;;
-    2) MODEL="huihui_ai/qwen2.5-abliterate:1.5b" ;;
-    3) MODEL="huihui_ai/qwen2.5-abliterate:0.5b" ;;
-    4) MODEL="huihui_ai/qwen2.5-abliterate:14b" ;;
-    5) MODEL="huihui_ai/qwen2.5-vl-abliterated:7b" ;;
-    6) MODEL="" ;;
-    7) 
-        echo "Browse models at: https://ollama.com/huihui_ai"
-        read -p "Enter full model name: " CUSTOM_MODEL
-        MODEL="$CUSTOM_MODEL"
+export OLLAMA_HOST=127.0.0.1
+export OLLAMA_MODELS="$HOME/local-llm-models/ollama"
+
+case "$1" in
+    run)
+        shift
+        echo "🦙 Running local model: $1"
+        ollama run "$@"
         ;;
-    *) 
-        print_warning "Invalid choice. Defaulting to 7b model."
-        MODEL="huihui_ai/qwen2.5-abliterate:7b"
+    list)
+        echo "📋 Local models:"
+        ollama list
+        ;;
+    pull)
+        shift
+        echo "📥 Pulling model locally: $1"
+        ollama pull "$@"
+        ;;
+    *)
+        ollama "$@"
         ;;
 esac
-
-# Download selected model
-if [[ -n "$MODEL" ]]; then
-    print_info "Pulling $MODEL ..."
-    
-    if ollama list 2>/dev/null | grep -q "$MODEL"; then
-        print_warning "Model already exists. Checking for update..."
-        ollama pull "$MODEL"
-    else
-        ollama pull "$MODEL"
-    fi
-    print_status "Model ready!"
-    
-    # Add alias
-    MODEL_SHORT=$(echo "$MODEL" | cut -d'/' -f2 | tr ':' '-')
-    echo "alias $MODEL_SHORT='ollama run $MODEL'" >> ~/.bashrc.tmp
-    echo "alias uncensored='ollama run $MODEL'" >> ~/.bashrc.tmp
-fi
-
-# ============================================================================
-# PART 3: AI TOOLS (excluding Ollama since we already did that)
-# ============================================================================
-print_section "STEP 3: Additional AI Tools"
-
-ai_options=(
-    "Python AI Virtual Environment (PyTorch, Transformers)"
-    "Heretic with fixed dependencies (model ablator)"
-    "llama.cpp (for GGUF model work)"
-    "Text Generation WebUI (Oobabooga)"
-    "Vector Databases (ChromaDB, Qdrant)"
-    "LangChain & LlamaIndex"
-    "Jupyter Lab & Data Science Stack"
-    "Skip all additional AI tools"
-)
-
-echo "Select additional AI tools to install (space-separated numbers):"
-for i in "${!ai_options[@]}"; do
-    echo "  $((i+1)). ${ai_options[$i]}"
-done
-echo ""
-read -p "Enter numbers (e.g., 1 2 3): " -a ai_choices
-
-for choice in "${ai_choices[@]}"; do
-    case $choice in
-        1)
-            print_info "Creating Python AI virtual environment..."
-            python3 -m venv ~/ai-env
-            source ~/ai-env/bin/activate
-            pip install --upgrade pip
-            pip install torch transformers accelerate bitsandbytes ipython sentencepiece protobuf
-            deactivate
-            print_status "AI environment created at ~/ai-env"
-            ;;
-        2)
-            print_info "Installing Heretic..."
-            python3 -m venv ~/heretic-env
-            source ~/heretic-env/bin/activate
-            pip install "huggingface-hub==0.24.0" "transformers==4.44.2"
-            pip install torch --index-url https://download.pytorch.org/whl/cu124
-            pip install accelerate bitsandbytes heretic-llm
-            cat > ~/download_model.py << 'EOF'
-from huggingface_hub import snapshot_download
-import os
-snapshot_download(
-    repo_id="Qwen/Qwen2.5-7B-Instruct",
-    local_dir=os.path.expanduser("~/models/qwen2.5-7b"),
-    local_dir_use_symlinks=False,
-    resume_download=True,
-    max_workers=4
-)
 EOF
-            chmod +x ~/download_model.py
-            echo "alias heretic-run='source ~/heretic-env/bin/activate && heretic --model ~/models/qwen2.5-7b --quantization bnb_4bit'" >> ~/.bashrc.tmp
-            deactivate
-            print_status "Heretic installed"
-            ;;
-        3)
-            print_info "Installing llama.cpp..."
-            git clone https://github.com/ggerganov/llama.cpp ~/llama.cpp
-            cd ~/llama.cpp
-            make -j$(nproc)
-            cd ~
-            print_status "llama.cpp installed"
-            ;;
-        4)
-            print_info "Installing Text Generation WebUI..."
-            if [ -d ~/text-generation-webui ]; then
-                cd ~/text-generation-webui && git pull
-            else
-                git clone https://github.com/oobabooga/text-generation-webui ~/text-generation-webui
-            fi
-            print_status "Text Generation WebUI cloned"
-            ;;
-        5)
-            print_info "Installing vector databases..."
-            python3 -m venv ~/ai-env 2>/dev/null || true
-            source ~/ai-env/bin/activate 2>/dev/null || true
-            pip install chromadb qdrant-client
-            deactivate
-            print_status "Vector DB clients installed"
-            ;;
-        6)
-            print_info "Installing LangChain & LlamaIndex..."
-            python3 -m venv ~/ai-env 2>/dev/null || true
-            source ~/ai-env/bin/activate 2>/dev/null || true
-            pip install langchain llama-index
-            deactivate
-            print_status "LangChain & LlamaIndex installed"
-            ;;
-        7)
-            print_info "Installing Jupyter Lab & Data Science..."
-            python3 -m venv ~/ai-env 2>/dev/null || true
-            source ~/ai-env/bin/activate 2>/dev/null || true
-            pip install jupyterlab notebook ipywidgets matplotlib seaborn plotly scikit-learn pandas numpy scipy tensorboard datasets
-            deactivate
-            print_status "Data Science stack installed"
-            ;;
-        8)
-            print_info "Skipping additional AI tools"
-            ;;
-    esac
-done
-
-# ============================================================================
-# PART 4: DEVELOPMENT TOOLS
-# ============================================================================
-print_section "STEP 4: Development Tools"
-
-dev_options=(
-    "Node.js + npm + nvm"
-    "Global NPM tools (yarn, pm2, typescript)"
-    "Docker + Docker Compose"
-    "Docker dev tools (hadolint, dive)"
-    "pyenv + poetry"
-    "SDKMAN (Java, Maven, Gradle)"
-    "GitHub CLI (gh)"
-    "Databases (PostgreSQL, Redis, MongoDB)"
-    "Skip all development tools"
-)
-
-echo "Select development tools to install (space-separated numbers):"
-for i in "${!dev_options[@]}"; do
-    echo "  $((i+1)). ${dev_options[$i]}"
-done
-echo ""
-read -p "Enter numbers: " -a dev_choices
-
-for choice in "${dev_choices[@]}"; do
-    case $choice in
-        1)
-            print_info "Installing nvm and Node.js LTS..."
-            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
-            export NVM_DIR="$HOME/.nvm"
-            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-            nvm install --lts && nvm use --lts
-            print_status "Node.js installed"
-            ;;
-        2)
-            print_info "Installing global NPM tools..."
-            export NVM_DIR="$HOME/.nvm"
-            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-            npm install -g yarn pnpm ts-node typescript nodemon pm2 eslint prettier
-            print_status "NPM tools installed"
-            ;;
-        3)
-            print_info "Installing Docker..."
-            for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do
-                sudo apt-get remove -y $pkg 2>/dev/null || true
-            done
-            sudo install -m 0755 -d /etc/apt/keyrings
-            sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-            sudo chmod a+r /etc/apt/keyrings/docker.asc
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-            sudo apt update
-            sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
-            sudo usermod -aG docker $USER
-            sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-            sudo chmod +x /usr/local/bin/docker-compose
-            print_status "Docker installed"
-            ;;
-        4)
-            print_info "Installing Docker dev tools..."
-            sudo wget -O /bin/hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 && sudo chmod +x /bin/hadolint
-            wget https://github.com/wagoodman/dive/releases/download/v0.12.0/dive_0.12.0_linux_amd64.deb && sudo dpkg -i dive_*.deb && rm dive_*.deb
-            print_status "Docker dev tools installed"
-            ;;
-        5)
-            print_info "Installing pyenv and poetry..."
-            curl https://pyenv.run | bash
-            echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc.tmp
-            echo 'command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc.tmp
-            echo 'eval "$(pyenv init -)"' >> ~/.bashrc.tmp
-            curl -sSL https://install.python-poetry.org | python3 -
-            echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc.tmp
-            print_status "pyenv and poetry installed"
-            ;;
-        6)
-            print_info "Installing SDKMAN and Java..."
-            curl -s "https://get.sdkman.io" | bash
-            source "$HOME/.sdkman/bin/sdkman-init.sh" 2>/dev/null || true
-            print_status "SDKMAN installed (run 'sdk install java' manually)"
-            ;;
-        7)
-            print_info "Installing GitHub CLI..."
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt update && sudo apt install -y gh
-            print_status "GitHub CLI installed"
-            ;;
-        8)
-            print_info "Installing databases..."
-            sudo apt install -y postgresql postgresql-contrib && sudo systemctl start postgresql
-            sudo apt install -y redis-server && sudo systemctl start redis-server
-            wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | sudo apt-key add - 2>/dev/null || true
-            echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
-            sudo apt update && sudo apt install -y mongodb-org || true
-            print_status "Databases installed"
-            ;;
-        9)
-            print_info "Skipping development tools"
-            ;;
-    esac
-done
-
-# ============================================================================
-# PART 5: TERMINAL & PRODUCTIVITY TOOLS
-# ============================================================================
-print_section "STEP 5: Terminal & Productivity Tools"
-
-term_options=(
-    "Oh My Zsh with plugins"
-    "Monitoring tools (btop, nvtop, glances)"
-    "Git enhancements (lazygit, git-extras)"
-    "Networking tools (httpie, jq, nmap)"
-    "WSL performance tweaks"
-    "Skip all terminal tools"
-)
-
-echo "Select terminal tools to install (space-separated numbers):"
-for i in "${!term_options[@]}"; do
-    echo "  $((i+1)). ${term_options[$i]}"
-done
-echo ""
-read -p "Enter numbers: " -a term_choices
-
-for choice in "${term_choices[@]}"; do
-    case $choice in
-        1)
-            print_info "Installing Oh My Zsh..."
-            sudo apt install -y zsh
-            sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-            git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions 2>/dev/null || true
-            git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting 2>/dev/null || true
-            sudo chsh -s $(which zsh) $USER 2>/dev/null || true
-            print_status "Oh My Zsh installed"
-            ;;
-        2)
-            print_info "Installing monitoring tools..."
-            sudo apt install -y btop nvtop glances iotop iftop
-            print_status "Monitoring tools installed"
-            ;;
-        3)
-            print_info "Installing Git enhancements..."
-            sudo apt install -y git-extras
-            LAZYGIT_VERSION=$(curl -s "https://api.github.com/repos/jesseduffield/lazygit/releases/latest" | grep -Po '"tag_name": "v\K[^"]*')
-            curl -Lo lazygit.tar.gz "https://github.com/jesseduffield/lazygit/releases/latest/download/lazygit_${LAZYGIT_VERSION}_Linux_x86_64.tar.gz"
-            tar xf lazygit.tar.gz lazygit
-            sudo install lazygit /usr/local/bin
-            rm lazygit lazygit.tar.gz
-            print_status "Git tools installed"
-            ;;
-        4)
-            print_info "Installing networking tools..."
-            sudo apt install -y httpie jq yq nmap netcat-traditional tcpdump
-            print_status "Networking tools installed"
-            ;;
-        5)
-            print_info "Applying WSL tweaks..."
-            cat >> ~/.bashrc.tmp << 'EOF'
-alias wsl-restart='cd ~ && cmd.exe /c wsl --shutdown'
-alias windows='cd /mnt/c/Users/$USER'
-alias chrome="/mnt/c/Program\ Files/Google/Chrome/Application/chrome.exe"
-alias code='cd $PWD && cmd.exe /c code .'
-EOF
-            print_status "WSL aliases added"
-            ;;
-        6)
-            print_info "Skipping terminal tools"
-            ;;
-    esac
-done
-
-# ============================================================================
-# PART 6: SECURITY & PENTESTING TOOLS
-# ============================================================================
-print_section "STEP 6: Security & Pentesting Tools"
-
-sec_options=(
-    "PentAGI (Docker-based)"
-    "PentestAgent (Python 3.10+)"
-    "HackerAI (Node.js)"
-    "HexStrike AI (150+ tools)"
-    "Skip all security tools"
-)
-
-echo "Select security tools to install (space-separated numbers):"
-for i in "${!sec_options[@]}"; do
-    echo "  $((i+1)). ${sec_options[$i]}"
-done
-echo ""
-read -p "Enter numbers: " -a sec_choices
-
-for choice in "${sec_choices[@]}"; do
-    case $choice in
-        1)
-            print_info "Installing PentAGI..."
-            if command -v docker &> /dev/null; then
-                git clone https://github.com/vxcontrol/pentagi.git ~/pentagi
-                cd ~/pentagi
-                cp .env.example .env
-                echo "Edit ~/pentagi/.env with your API keys"
-                docker-compose up -d
-                cd ~
-                echo "alias pentagi='cd ~/pentagi && docker-compose up -d'" >> ~/.bashrc.tmp
-                print_status "PentAGI started at http://localhost:8080"
-            else
-                print_warning "Docker not installed. Install Dev Tools option 3 first."
-            fi
-            ;;
-        2)
-            print_info "Installing PentestAgent..."
-            python_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-            if (( $(echo "$python_version < 3.10" | bc -l) )); then
-                print_error "PentestAgent requires Python 3.10+"
-            else
-                git clone https://github.com/GH05TCREW/pentestagent.git ~/pentestagent
-                cd ~/pentestagent
-                python3 -m venv venv
-                source venv/bin/activate
-                pip install -e ".[all]"
-                playwright install chromium
-                deactivate
-                cp .env.example .env
-                echo "alias pentestagent='cd ~/pentestagent && source venv/bin/activate && pentestagent'" >> ~/.bashrc.tmp
-                cd ~
-                print_status "PentestAgent installed"
-            fi
-            ;;
-        3)
-            print_info "Installing HackerAI..."
-            if command -v node &> /dev/null; then
-                command -v pnpm &> /dev/null || npm install -g pnpm
-                git clone https://github.com/hackerai-tech/hackerai.git ~/hackerai
-                cd ~/hackerai
-                pnpm install
-                pnpm run setup
-                echo "alias hackerai='cd ~/hackerai && pnpm run dev'" >> ~/.bashrc.tmp
-                cd ~
-                print_status "HackerAI installed"
-            else
-                print_warning "Node.js not installed"
-            fi
-            ;;
-        4)
-            print_info "Installing HexStrike AI..."
-            git clone https://github.com/0x4m4/hexstrike-ai.git ~/hexstrike-ai
-            cd ~/hexstrike-ai
-            python3 -m venv hexstrike-env
-            source hexstrike-env/bin/activate
-            pip install -r requirements.txt
-            deactivate
-            sudo apt install -y nmap masscan rustscan amass subfinder nuclei fierce dnsenum \
-                autorecon theharvester responder netexec enum4linux-ng gobuster feroxbuster \
-                dirsearch ffuf dirb httpx katana nikto sqlmap wpscan arjun paramspider dalfox \
-                wafw00f hydra john hashcat medusa patator evil-winrm gdb radare2 binwalk \
-                checksec foremost steghide exiftool chromium-browser 2>/dev/null || true
-            cat > ~/hexstrike-ai/start.sh << 'EOF'
+    
+    # Create model info script
+    cat > "$BIN_DIR/local-models-info" << 'EOF'
 #!/bin/bash
-cd ~/hexstrike-ai
-source hexstrike-env/bin/activate
-python3 hexstrike_server.py
-EOF
-            chmod +x ~/hexstrike-ai/start.sh
-            echo "alias hexstrike='~/hexstrike-ai/start.sh'" >> ~/.bashrc.tmp
-            cd ~
-            print_status "HexStrike AI installed"
-            ;;
-        5)
-            print_info "Skipping security tools"
-            ;;
-    esac
-done
+# Show info about local models
 
-# ============================================================================
-# PART 7: FINAL CLEANUP
-# ============================================================================
-print_section "STEP 7: Finalizing Setup"
-
-# Create directories
-mkdir -p ~/models ~/projects ~/downloads ~/cache/huggingface
-
-# Merge temporary bashrc additions
-if [ -f ~/.bashrc.tmp ]; then
-    cat ~/.bashrc.tmp >> ~/.bashrc
-    rm ~/.bashrc.tmp
-fi
-
-# Add common aliases if not already present
-cat >> ~/.bashrc << 'EOF'
-export HF_HOME=~/cache/huggingface
-alias mem='free -h'
-alias gpu='nvidia-smi'
-alias top-ai='watch -n 2 nvidia-smi'
-alias d='docker'
-alias dc='docker-compose'
-alias dps='docker ps'
-alias di='docker images'
-alias gs='git status'
-alias ga='git add'
-alias gc='git commit'
-alias gp='git push'
-alias gl='git log --oneline --graph'
-alias edit='mousepad'
-alias files='thunar'
-EOF
-
-# Create test script
-cat > ~/test_env.py << 'EOF'
-#!/usr/bin/env python3
-print("Testing environment...")
-try:
-    import torch
-    print(f"✅ PyTorch {torch.__version__}")
-    print(f"✅ CUDA available: {torch.cuda.is_available()}")
-except: print("⚠️ PyTorch not installed")
-try:
-    import transformers
-    print(f"✅ Transformers {transformers.__version__}")
-except: print("⚠️ Transformers not installed")
-print("\n✅ Environment check complete!")
-EOF
-chmod +x ~/test_env.py
-
-# ============================================================================
-# FINAL SUMMARY
-# ============================================================================
-clear
-print_section "🎉 INSTALLATION COMPLETE!"
-
-echo -e "${GREEN}Your environment is ready!${NC}\n"
-
-echo -e "${YELLOW}📋 Quick Commands:${NC}"
-if [[ -n "$MODEL" ]]; then
-    echo "  uncensored              - Chat with $MODEL"
-fi
-echo "  python3 ~/test_env.py    - Test Python environment"
-echo "  ai-env                   - Activate AI virtual env (if installed)"
-echo "  heretic-run              - Run Heretic (if installed)"
-echo "  ollama list              - See all models"
+echo "📊 LOCAL MODELS STATUS"
+echo "======================"
 echo ""
 
-echo -e "${YELLOW}📦 Installed Components:${NC}"
-[[ -n "$MODEL" ]] && echo "  • Ollama model: $MODEL"
-[[ -d ~/ai-env ]] && echo "  • AI Python environment"
-[[ -d ~/heretic-env ]] && echo "  • Heretic (model ablator)"
-[[ -d ~/llama.cpp ]] && echo "  • llama.cpp"
-[[ -d ~/text-generation-webui ]] && echo "  • Text Generation WebUI"
-[[ -d ~/pentagi ]] && echo "  • PentAGI"
-[[ -d ~/pentestagent ]] && echo "  • PentestAgent"
-[[ -d ~/hackerai ]] && echo "  • HackerAI"
-[[ -d ~/hexstrike-ai ]] && echo "  • HexStrike AI"
-
+echo "🦙 Ollama models:"
+if command -v ollama >/dev/null; then
+    ollama list 2>/dev/null || echo "  No Ollama models found"
+else
+    echo "  Ollama not installed"
+fi
 echo ""
-echo -e "${GREEN}Enjoy your complete WSL AI development environment! 🚀${NC}"
+
+echo "📦 GGUF models (llama.cpp):"
+GGUF_DIR="$HOME/local-llm-models/gguf"
+if [ -d "$GGUF_DIR" ]; then
+    find "$GGUF_DIR" -name "*.gguf" -exec basename {} \; 2>/dev/null | sed 's/^/  /' || echo "  No GGUF models found"
+else
+    echo "  No GGUF models found"
+fi
+echo ""
+
+echo "💾 Total disk usage:"
+du -sh "$HOME/local-llm-models" 2>/dev/null || echo "  No models yet"
+EOF
+    
+    # Make all scripts executable
+    chmod +x "$BIN_DIR"/*
+    
+    print_success "Local model runners created"
+}
+
+# ==================== CREATE PERSISTENT ALIASES ====================
+create_aliases() {
+    print_step "Creating permanent LOCAL aliases..."
+    
+    # Create aliases file
+    cat > "$HOME/.local_llm_aliases" << 'EOF'
+#!/bin/bash
+# ==================== 100% LOCAL LLM ALIASES ====================
+# These load every time you open a terminal
+
+# Colors
+LRED='\033[1;31m'
+LGREEN='\033[1;32m'
+LYELLOW='\033[1;33m'
+LBLUE='\033[1;34m'
+LPURPLE='\033[1;35m'
+LCYAN='\033[1;36m'
+NC='\033[0m'
+
+# ==================== OLLAMA LOCAL COMMANDS ====================
+alias ollama-local='ollama'
+alias ollama-list='ollama list'
+alias ollama-ps='ollama ps'
+alias ollama-stop='ollama stop'
+alias ollama-stop-all='ollama stop -a'
+alias ollama-pull='ollama pull'
+alias ollama-run='ollama run'
+
+# Quick model shortcuts (downloads on first use)
+alias run-llama='ollama run llama3.2'
+alias run-mistral='ollama run mistral'
+alias run-codellama='ollama run codellama'
+alias run-phi='ollama run phi3'
+alias run-neural='ollama run neural-chat'
+
+# ==================== LLAMA.CPP LOCAL COMMANDS ====================
+alias llamacpp='$HOME/.local/bin/llama-run'
+alias llama-server='$HOME/.local/bin/llama-serve'
+alias gguf-list='ls -lh $HOME/local-llm-models/gguf/*.gguf 2>/dev/null'
+alias gguf-run='$HOME/.local/bin/run-gguf'
+
+# ==================== LOCAL MODEL MANAGEMENT ====================
+alias models-cd='cd $HOME/local-llm-models'
+alias models-size='du -sh $HOME/local-llm-models/* 2>/dev/null'
+alias models-info='$HOME/.local/bin/local-models-info'
+alias models-ollama='cd $HOME/local-llm-models/ollama'
+alias models-gguf='cd $HOME/local-llm-models/gguf'
+
+# ==================== SYSTEM STATUS ====================
+alias llm-status='echo -e "${LBLUE}=== LOCAL LLM STATUS ===${NC}" && echo "" && echo -e "${LCYAN}Ollama:${NC}" && systemctl is-active ollama 2>/dev/null && ollama ps 2>/dev/null && echo "" && echo -e "${LCYAN}Models:${NC}" && du -sh $HOME/local-llm-models/* 2>/dev/null'
+alias llm-logs='journalctl -u ollama -f -n 50'
+alias llm-restart='sudo systemctl restart ollama'
+
+# ==================== LOCAL TEXT GENERATION ====================
+ask() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: ask <prompt>"
+        return 1
+    fi
+    ollama run llama3.2 "$*"
+}
+
+ask-fast() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: ask-fast <prompt>"
+        return 1
+    fi
+    ollama run phi3 "$*"
+}
+
+ask-code() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: ask-code <prompt>"
+        return 1
+    fi
+    ollama run codellama "$*"
+}
+
+# ==================== LOCAL HELP ====================
+llm-help() {
+    echo -e "${LPURPLE}╔════════════════════════════════════════════════╗${NC}"
+    echo -e "${LPURPLE}║       100% LOCAL LLM COMMANDS                 ║${NC}"
+    echo -e "${LPURPLE}╚════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${LBLUE}📝 QUERY MODELS:${NC}"
+    echo -e "  ${LGREEN}ask 'your question'${NC}         - Ask Llama 3.2"
+    echo -e "  ${LGREEN}ask-fast 'question'${NC}         - Ask Phi3 (faster)"
+    echo -e "  ${LGREEN}ask-code 'write function'${NC}   - Ask CodeLlama"
+    echo ""
+    echo -e "${LBLUE}🦙 OLLAMA:${NC}"
+    echo -e "  ${LGREEN}ollama-list${NC}                  - List local models"
+    echo -e "  ${LGREEN}ollama-ps${NC}                    - Show running models"
+    echo -e "  ${LGREEN}ollama-pull <model>${NC}          - Download model locally"
+    echo -e "  ${LGREEN}ollama-run <model>${NC}           - Run a model"
+    echo -e "  ${LGREEN}ollama-stop-all${NC}              - Stop all models"
+    echo ""
+    echo -e "${LBLUE}📦 GGUF MODELS (llama.cpp):${NC}"
+    echo -e "  ${LGREEN}gguf-list${NC}                    - List GGUF files"
+    echo -e "  ${LGREEN}gguf-run <file> <prompt>${NC}     - Run GGUF model"
+    echo ""
+    echo -e "${LBLUE}📊 MODEL MANAGEMENT:${NC}"
+    echo -e "  ${LGREEN}models-info${NC}                  - Show all local models"
+    echo -e "  ${LGREEN}models-size${NC}                  - Check disk usage"
+    echo -e "  ${LGREEN}models-cd${NC}                    - Go to models directory"
+    echo -e "  ${LGREEN}llm-status${NC}                   - Show system status"
+    echo ""
+    echo -e "${LBLUE}📁 MODEL LOCATIONS:${NC}"
+    echo -e "  ${LYELLOW}Ollama:${NC} ~/local-llm-models/ollama/"
+    echo -e "  ${LYELLOW}GGUF:${NC}   ~/local-llm-models/gguf/"
+    echo ""
+}
+
+# Show welcome message on terminal open (only once)
+if [[ -z "$LOCAL_LLM_WELCOME" ]]; then
+    export LOCAL_LLM_WELCOME=1
+    echo ""
+    echo -e "${LGREEN}════════════════════════════════════════════════${NC}"
+    echo -e "${LWHITE}     🌍 PURE LOCAL LLM ENVIRONMENT READY       ${NC}"
+    echo -e "${LGREEN}════════════════════════════════════════════════${NC}"
+    echo -e "${LCYAN}Type 'llm-help' for all local commands${NC}"
+    echo -e "${LCYAN}All models run 100% locally - no internet needed${NC}"
+    echo ""
+fi
+EOF
+    
+    # Add to bashrc if not already there
+    if ! grep -q "local_llm_aliases" "$HOME/.bashrc"; then
+        echo "" >> "$HOME/.bashrc"
+        echo "# Load local LLM aliases" >> "$HOME/.bashrc"
+        echo "if [ -f ~/.local_llm_aliases ]; then" >> "$HOME/.bashrc"
+        echo "    source ~/.local_llm_aliases" >> "$HOME/.bashrc"
+        echo "fi" >> "$HOME/.bashrc"
+    fi
+    
+    # Also add for zsh if it exists
+    if [ -f "$HOME/.zshrc" ]; then
+        if ! grep -q "local_llm_aliases" "$HOME/.zshrc"; then
+            echo "" >> "$HOME/.zshrc"
+            echo "# Load local LLM aliases" >> "$HOME/.zshrc"
+            echo "if [ -f ~/.local_llm_aliases ]; then" >> "$HOME/.zshrc"
+            echo "    source ~/.local_llm_aliases" >> "$HOME/.zshrc"
+            echo "fi" >> "$HOME/.zshrc"
+        fi
+    fi
+    
+    print_success "Permanent aliases created - they'll show every terminal open"
+}
+
+# ==================== FINAL MESSAGE ====================
+show_final_message() {
+    echo ""
+    echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
+    echo -e "${WHITE}           ✅ LOCAL LLM SETUP COMPLETE! ✅             ${NC}"
+    echo -e "${GREEN}════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${CYAN}📁 Everything is local:${NC}"
+    echo -e "   Models:     $MODELS_DIR"
+    echo -e "   Config:     $CONFIG_DIR"
+    echo -e "   Binaries:   $BIN_DIR"
+    echo -e "   Log file:   $LOG_FILE"
+    echo ""
+    echo -e "${YELLOW}🔄 Open a NEW terminal or run: source ~/.bashrc${NC}"
+    echo ""
+    echo -e "${PURPLE}📝 Quick test:${NC}"
+    echo -e "   ${WHITE}1. Open new terminal${NC}"
+    echo -e "   ${WHITE}2. Type 'llm-help' to see all commands${NC}"
+    echo -e "   ${WHITE}3. Type 'ollama-pull tinyllama' for a tiny test model${NC}"
+    echo -e "   ${WHITE}4. Type 'ask \"Hello\"' to test${NC}"
+    echo ""
+    echo -e "${GREEN}All models run 100% locally. No phoning home. No cloud.${NC}"
+    echo ""
+}
+
+# ==================== MAIN EXECUTION ====================
+main() {
+    create_dirs
+    install_ollama
+    install_llamacpp
+    create_runners
+    create_aliases
+    download_basic_models
+    
+    # Source the aliases for current session
+    source "$HOME/.local_llm_aliases" 2>/dev/null || true
+    
+    show_final_message
+}
+
+# Run it
+main
