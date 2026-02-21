@@ -180,8 +180,7 @@ EOF
 install_ollama() {
     print_step "Setting up Ollama..."
     
-    local should_install=false
-    local should_configure=true
+    local should_configure=false   # Initialize to false
     
     if [ "$OLLAMA_EXISTS" = true ]; then
         ask_reinstall "Ollama" "$OLLAMA_VERSION"
@@ -200,7 +199,7 @@ install_ollama() {
                 ;;
             1) # Skip
                 print_info "Keeping existing Ollama installation"
-                # Even if we skip reinstall, we might still want to ensure service is configured
+                # Check if service is running
                 if [ "$OLLAMA_RUNNING" = false ]; then
                     print_warning "Ollama is installed but not running. Start it? (y/n)"
                     read -r start_ollama
@@ -214,9 +213,11 @@ install_ollama() {
                 read -r reconfigure
                 if [[ "$reconfigure" =~ ^[Yy]$ ]]; then
                     configure_ollama_service
+                    # Manual config done, no need for automatic config
                 else
-                    should_configure=false
+                    : # nothing to do
                 fi
+                # should_configure remains false (we already set it to false)
                 ;;
         esac
     else
@@ -225,7 +226,7 @@ install_ollama() {
         should_configure=true
     fi
     
-    # Configure service if needed
+    # Configure service if needed (only for fresh install/reinstall/update)
     if [ "$should_configure" = true ]; then
         configure_ollama_service
     fi
@@ -546,11 +547,11 @@ show_summary() {
 main() {
     check_existing
     create_dirs
-    install_ollama      # This now properly handles skip/reinstall/update
-    install_llamacpp    # This too
-    create_runners      # Always updates (safe)
-    create_aliases      # Asks before overwriting
-    download_models     # Asks if you want them
+    install_ollama
+    install_llamacpp
+    create_runners
+    create_aliases
+    download_models
     show_summary
 }
 
