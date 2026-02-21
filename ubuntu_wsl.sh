@@ -54,6 +54,13 @@ check_existing() {
         print_info "Ollama not found"
     fi
     
+    # Check if Ollama service is running
+    if systemctl is-active --quiet ollama 2>/dev/null; then
+        OLLAMA_RUNNING=true
+    else
+        OLLAMA_RUNNING=false
+    fi
+    
     # Check llama.cpp
     if [ -f "$BIN_DIR/llama-run" ] || [ -f "$BIN_DIR/main" ]; then
         LLAMACPP_EXISTS=true
@@ -92,16 +99,16 @@ ask_reinstall() {
     
     echo -e "${YELLOW}⚠️  $component is already installed.${NC}"
     echo -e "   Current version: ${CYAN}$current_version${NC}"
-    echo -e "   Do you want to:"
-    echo -e "   ${GREEN}[s]${NC} Skip (keep current)"
-    echo -e "   ${GREEN}[r]${NC} Reinstall"
+    echo -e "   What would you like to do?"
+    echo -e "   ${GREEN}[s]${NC} Skip (keep current, don't change anything)"
+    echo -e "   ${GREEN}[r]${NC} Reinstall fresh"
     echo -e "   ${GREEN}[u]${NC} Update if possible"
     read -p "Choice [s/r/u]: " choice
     
     case $choice in
         r|R) return 0 ;;  # Reinstall
         u|U) return 2 ;;  # Update
-        *) return 1 ;;    # Skip
+        *) return 1 ;;    # Skip (default)
     esac
 }
 
@@ -122,42 +129,27 @@ create_dirs() {
     fi
 }
 
-# ==================== INSTALL OLLAMA (WITH CHECKS) ====================
-install_ollama() {
-    print_step "Setting up Ollama..."
+# ==================== CONFIGURE OLLAMA SERVICE ====================
+configure_ollama_service() {
+    print_step "Configuring Ollama service for local-only use..."
     
-    if [ "$OLLAMA_EXISTS" = true ]; then
-        ask_reinstall "Ollama" "$OLLAMA_VERSION"
-        local choice=$?
-        if [ $choice -eq 1 ]; then
-            print_info "Skipping Ollama installation"
-            return
-        elif [ $choice -eq 2 ]; then
-            print_step "Attempting to update Ollama..."
-            curl -fsSL https://ollama.com/install.sh | sh
-            print_success "Ollama updated"
-        fi
-    else
-        print_info "Installing Ollama..."
-        curl -fsSL https://ollama.com/install.sh | sh
-    fi
+    # Stop service if running
+    sudo systemctl stop ollama 2>/dev/null || true
     
-    # Always ensure service is configured correctly
-    if systemctl list-units --full -all | grep -Fq "ollama.service"; then
-        sudo systemctl stop ollama 2>/dev/null || true
-        
-        # Configure for local-only use
-        sudo mkdir -p /etc/ollama
-        sudo tee /etc/ollama/config.json > /dev/null <<EOF
+    # Create config directory
+    sudo mkdir -p /etc/ollama
+    
+    # Write config file
+    sudo tee /etc/ollama/config.json > /dev/null <<EOF
 {
     "disable_telemetry": true,
     "disable_update_check": true,
     "models_dir": "$MODELS_DIR/ollama"
 }
 EOF
-        
-        # Update service
-        sudo tee /etc/systemd/system/ollama.service > /dev/null <<EOF
+    
+    # Update service file
+    sudo tee /etc/systemd/system/ollama.service > /dev/null <<EOF
 [Unit]
 Description=Ollama Service - Local Only
 After=network.target
@@ -175,11 +167,67 @@ Environment="OLLAMA_DISABLE_TELEMETRY=1"
 [Install]
 WantedBy=default.target
 EOF
+    
+    # Reload and start
+    sudo systemctl daemon-reload
+    sudo systemctl enable ollama
+    sudo systemctl start ollama
+    
+    print_success "Ollama service configured and started"
+}
+
+# ==================== INSTALL OLLAMA (WITH CHECKS) ====================
+install_ollama() {
+    print_step "Setting up Ollama..."
+    
+    local should_install=false
+    local should_configure=true
+    
+    if [ "$OLLAMA_EXISTS" = true ]; then
+        ask_reinstall "Ollama" "$OLLAMA_VERSION"
+        local choice=$?
         
-        sudo systemctl daemon-reload
-        sudo systemctl enable ollama
-        sudo systemctl start ollama
-        print_success "Ollama service configured"
+        case $choice in
+            0) # Reinstall
+                print_info "Reinstalling Ollama..."
+                curl -fsSL https://ollama.com/install.sh | sh
+                should_configure=true
+                ;;
+            2) # Update
+                print_info "Updating Ollama..."
+                curl -fsSL https://ollama.com/install.sh | sh
+                should_configure=true
+                ;;
+            1) # Skip
+                print_info "Keeping existing Ollama installation"
+                # Even if we skip reinstall, we might still want to ensure service is configured
+                if [ "$OLLAMA_RUNNING" = false ]; then
+                    print_warning "Ollama is installed but not running. Start it? (y/n)"
+                    read -r start_ollama
+                    if [[ "$start_ollama" =~ ^[Yy]$ ]]; then
+                        sudo systemctl start ollama
+                        print_success "Ollama started"
+                    fi
+                fi
+                # Ask if they want to reconfigure service
+                echo -e "${YELLOW}Do you want to reconfigure the Ollama service for local-only mode? (y/n)${NC}"
+                read -r reconfigure
+                if [[ "$reconfigure" =~ ^[Yy]$ ]]; then
+                    configure_ollama_service
+                else
+                    should_configure=false
+                fi
+                ;;
+        esac
+    else
+        print_info "Installing Ollama..."
+        curl -fsSL https://ollama.com/install.sh | sh
+        should_configure=true
+    fi
+    
+    # Configure service if needed
+    if [ "$should_configure" = true ]; then
+        configure_ollama_service
     fi
 }
 
@@ -190,44 +238,62 @@ install_llamacpp() {
     if [ "$LLAMACPP_EXISTS" = true ]; then
         ask_reinstall "llama.cpp" "existing build"
         local choice=$?
-        if [ $choice -eq 1 ]; then
-            print_info "Skipping llama.cpp installation"
-            return
-        fi
-        # If reinstall or update, continue to build
-    fi
-    
-    print_info "Building llama.cpp from source..."
-    cd /tmp
-    if [ -d "llama.cpp" ]; then
-        cd llama.cpp
-        git pull
+        
+        case $choice in
+            0) # Reinstall
+                print_info "Reinstalling llama.cpp..."
+                cd /tmp
+                rm -rf llama.cpp
+                git clone https://github.com/ggerganov/llama.cpp.git
+                cd llama.cpp
+                make clean
+                make -j$(nproc)
+                cp main server "$BIN_DIR/" 2>/dev/null || true
+                ln -sf "$BIN_DIR/main" "$BIN_DIR/llama-run" 2>/dev/null || true
+                ln -sf "$BIN_DIR/server" "$BIN_DIR/llama-serve" 2>/dev/null || true
+                cd ~
+                print_success "llama.cpp reinstalled"
+                ;;
+            2) # Update
+                print_info "Updating llama.cpp..."
+                cd /tmp
+                if [ -d "llama.cpp" ]; then
+                    cd llama.cpp
+                    git pull
+                else
+                    git clone https://github.com/ggerganov/llama.cpp.git
+                    cd llama.cpp
+                fi
+                make clean
+                make -j$(nproc)
+                cp main server "$BIN_DIR/" 2>/dev/null || true
+                cd ~
+                print_success "llama.cpp updated"
+                ;;
+            1) # Skip
+                print_info "Keeping existing llama.cpp installation"
+                ;;
+        esac
     else
+        print_info "Installing llama.cpp..."
+        cd /tmp
         git clone https://github.com/ggerganov/llama.cpp.git
         cd llama.cpp
+        make -j$(nproc)
+        cp main server "$BIN_DIR/" 2>/dev/null || true
+        ln -sf "$BIN_DIR/main" "$BIN_DIR/llama-run"
+        ln -sf "$BIN_DIR/server" "$BIN_DIR/llama-serve"
+        cd ~
+        print_success "llama.cpp installed"
     fi
-    
-    make clean
-    make -j$(nproc)
-    
-    # Install binaries
-    cp main server llama-quantize "$BIN_DIR/" 2>/dev/null || true
-    ln -sf "$BIN_DIR/main" "$BIN_DIR/llama-run" 2>/dev/null || true
-    ln -sf "$BIN_DIR/server" "$BIN_DIR/llama-serve" 2>/dev/null || true
-    
-    cd ~
-    print_success "llama.cpp installed/updated"
 }
 
 # ==================== CREATE/UPDATE RUNNERS ====================
 create_runners() {
     print_step "Setting up model runners..."
     
-    local runners_updated=0
-    
-    # GGUF runner
-    if [ ! -f "$BIN_DIR/run-gguf" ] || [ "$(cat "$BIN_DIR/run-gguf" 2>/dev/null | wc -l)" -lt 10 ]; then
-        cat > "$BIN_DIR/run-gguf" << 'EOF'
+    # Always create/update runners - they're small and safe to overwrite
+    cat > "$BIN_DIR/run-gguf" << 'EOF'
 #!/bin/bash
 MODEL_DIR="$HOME/local-llm-models/gguf"
 BIN_DIR="$HOME/.local/bin"
@@ -250,38 +316,35 @@ PROMPT="${2:-Hello, how are you?}"
 echo "🚀 Running $1 locally..."
 "$BIN_DIR/llama-run" -m "$MODEL" -p "$PROMPT" -n 512 -t 4
 EOF
-        chmod +x "$BIN_DIR/run-gguf"
-        runners_updated=$((runners_updated+1))
-    fi
     
-    # Model info script
-    if [ ! -f "$BIN_DIR/local-models-info" ]; then
-        cat > "$BIN_DIR/local-models-info" << 'EOF'
+    cat > "$BIN_DIR/local-models-info" << 'EOF'
 #!/bin/bash
 echo "📊 LOCAL MODELS STATUS"
 echo "======================"
 echo ""
 
 echo "🦙 Ollama models:"
-ollama list 2>/dev/null || echo "  No Ollama models found"
+if command -v ollama &> /dev/null; then
+    ollama list 2>/dev/null || echo "  No Ollama models found"
+else
+    echo "  Ollama not installed"
+fi
 echo ""
 
 echo "📦 GGUF models:"
-ls -lh "$HOME/local-llm-models/gguf"/*.gguf 2>/dev/null | sed 's/^/  /' || echo "  No GGUF models found"
+if [ -d "$HOME/local-llm-models/gguf" ]; then
+    ls -lh "$HOME/local-llm-models/gguf"/*.gguf 2>/dev/null | sed 's/^/  /' || echo "  No GGUF models found"
+else
+    echo "  No GGUF directory found"
+fi
 echo ""
 
 echo "💾 Disk usage:"
 du -sh "$HOME/local-llm-models" 2>/dev/null || echo "  No models yet"
 EOF
-        chmod +x "$BIN_DIR/local-models-info"
-        runners_updated=$((runners_updated+1))
-    fi
     
-    if [ $runners_updated -gt 0 ]; then
-        print_success "Updated $runners_updated runner scripts"
-    else
-        print_info "Runner scripts already exist"
-    fi
+    chmod +x "$BIN_DIR/run-gguf" "$BIN_DIR/local-models-info"
+    print_success "Runner scripts updated"
 }
 
 # ==================== CREATE/UPDATE ALIASES ====================
@@ -289,9 +352,9 @@ create_aliases() {
     print_step "Setting up permanent aliases..."
     
     if [ "$ALIASES_EXIST" = true ]; then
-        ask_reinstall "LLM aliases" "existing"
-        local choice=$?
-        if [ $choice -eq 1 ]; then
+        echo -e "${YELLOW}Aliases already exist. Overwrite? (y/n)${NC}"
+        read -r overwrite_aliases
+        if [[ ! "$overwrite_aliases" =~ ^[Yy]$ ]]; then
             print_info "Keeping existing aliases"
             return
         fi
@@ -371,7 +434,7 @@ llm-help() {
     echo ""
 }
 
-# Welcome message (only once)
+# Welcome message (only once per session)
 if [[ -z "$LOCAL_LLM_WELCOME" ]]; then
     export LOCAL_LLM_WELCOME=1
     echo ""
@@ -384,14 +447,14 @@ if [[ -z "$LOCAL_LLM_WELCOME" ]]; then
 fi
 EOF
     
-    # Add to bashrc if not already there
-    if ! grep -q "local_llm_aliases" "$HOME/.bashrc"; then
+    # Add to bashrc if not already there (using grep to check exact line)
+    if ! grep -q "source ~/.local_llm_aliases" "$HOME/.bashrc" 2>/dev/null; then
         echo "" >> "$HOME/.bashrc"
         echo "# Load local LLM aliases" >> "$HOME/.bashrc"
         echo "[ -f ~/.local_llm_aliases ] && source ~/.local_llm_aliases" >> "$HOME/.bashrc"
     fi
     
-    if [ -f "$HOME/.zshrc" ] && ! grep -q "local_llm_aliases" "$HOME/.zshrc"; then
+    if [ -f "$HOME/.zshrc" ] && ! grep -q "source ~/.local_llm_aliases" "$HOME/.zshrc" 2>/dev/null; then
         echo "" >> "$HOME/.zshrc"
         echo "# Load local LLM aliases" >> "$HOME/.zshrc"
         echo "[ -f ~/.local_llm_aliases ] && source ~/.local_llm_aliases" >> "$HOME/.zshrc"
@@ -402,22 +465,30 @@ EOF
 
 # ==================== DOWNLOAD OPTIONAL MODELS ====================
 download_models() {
-    if [ "$MODELS_EXIST" = true ] && [ "$MODEL_COUNT" -gt 0 ]; then
-        echo -e "${YELLOW}You already have $MODEL_COUNT models. Download more? (y/n)${NC}"
-        read -r download_more
-        if [[ ! "$download_more" =~ ^[Yy]$ ]]; then
-            return
-        fi
-    fi
-    
     print_step "Would you like to download some tiny starter models? (y/n)"
     read -r download_choice
     
     if [[ "$download_choice" =~ ^[Yy]$ ]]; then
-        print_info "Downloading TinyLlama (1.1B) - runs anywhere..."
+        mkdir -p "$MODELS_DIR/gguf"
         cd "$MODELS_DIR/gguf"
-        wget -O tinyllama-1.1b.Q4_K_M.gguf https://huggingface.co/TheBloke/TinyLlama-1.1B-GGUF/resolve/main/tinyllama-1.1b.Q4_K_M.gguf
-        print_success "TinyLlama downloaded"
+        
+        echo -e "${CYAN}Downloading TinyLlama (1.1B) - runs anywhere...${NC}"
+        if [ ! -f "tinyllama-1.1b.Q4_K_M.gguf" ]; then
+            wget -O tinyllama-1.1b.Q4_K_M.gguf https://huggingface.co/TheBloke/TinyLlama-1.1B-GGUF/resolve/main/tinyllama-1.1b.Q4_K_M.gguf
+            print_success "TinyLlama downloaded"
+        else
+            print_info "TinyLlama already exists"
+        fi
+        
+        echo -e "${CYAN}Downloading Phi-2 (2.7B) - smart small model...${NC}"
+        if [ ! -f "phi-2.Q4_K_M.gguf" ]; then
+            wget -O phi-2.Q4_K_M.gguf https://huggingface.co/TheBloke/phi-2-GGUF/resolve/main/phi-2.Q4_K_M.gguf
+            print_success "Phi-2 downloaded"
+        else
+            print_info "Phi-2 already exists"
+        fi
+        
+        cd ~
     fi
 }
 
@@ -433,6 +504,11 @@ show_summary() {
     echo -n "   Ollama: "
     if command -v ollama &> /dev/null; then
         echo -e "${GREEN}Installed${NC} ($(ollama --version 2>/dev/null | head -n1))"
+        if systemctl is-active --quiet ollama 2>/dev/null; then
+            echo -e "   ${GREEN}✓ Service running${NC}"
+        else
+            echo -e "   ${RED}✗ Service not running${NC}"
+        fi
     else
         echo -e "${RED}Not installed${NC}"
     fi
@@ -470,11 +546,11 @@ show_summary() {
 main() {
     check_existing
     create_dirs
-    install_ollama
-    install_llamacpp
-    create_runners
-    create_aliases
-    download_models
+    install_ollama      # This now properly handles skip/reinstall/update
+    install_llamacpp    # This too
+    create_runners      # Always updates (safe)
+    create_aliases      # Asks before overwriting
+    download_models     # Asks if you want them
     show_summary
 }
 
