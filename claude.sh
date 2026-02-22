@@ -222,17 +222,32 @@ if ! check_command nvcc; then
     rm -f "$TEMP_DIR/cuda-keyring.deb"
     sudo apt-get update -qq || warn "apt update after adding CUDA repo returned non-zero."
 
-    # Pick the latest versioned cuda-toolkit package, fall back to the unversioned one
-    CUDA_PKG=$(apt-cache search --names-only '^cuda-toolkit-[0-9]+-[0-9]+$' 2>/dev/null \
-               | sort -V | tail -n1 | awk '{print $1}')
+    # Pick the best CUDA toolkit package.
+    # llama-cpp-python pre-built wheels exist for CUDA 12.x (cu121/cu122/cu124).
+    # Prefer the latest 12.x; only fall back to a newer major if 12.x is absent.
+    all_cuda_pkgs=$(apt-cache search --names-only '^cuda-toolkit-[0-9]+-[0-9]+$' 2>/dev/null \
+                    | awk '{print $1}')
+
+    # First choice: highest cuda-toolkit-12-* available
+    CUDA_PKG=$(echo "$all_cuda_pkgs" | grep '^cuda-toolkit-12-' | sort -V | tail -n1 || true)
+
     if [[ -n "$CUDA_PKG" ]]; then
-        info "Installing $CUDA_PKG …"
+        info "Installing $CUDA_PKG (CUDA 12.x — best compatibility with llama-cpp-python wheels)…"
         sudo apt-get install -y "$CUDA_PKG" \
             || warn "CUDA package install returned non-zero — may still be usable."
     else
-        warn "No versioned cuda-toolkit found; trying cuda-toolkit (latest)."
-        sudo apt-get install -y cuda-toolkit \
-            || warn "cuda-toolkit install returned non-zero."
+        # No 12.x found — warn loudly, then try whatever is newest
+        CUDA_PKG=$(echo "$all_cuda_pkgs" | sort -V | tail -n1 || true)
+        if [[ -n "$CUDA_PKG" ]]; then
+            warn "No CUDA 12.x toolkit found — installing $CUDA_PKG."
+            warn "Pre-built llama-cpp-python wheels may not exist for this version; a source build will be attempted."
+            sudo apt-get install -y "$CUDA_PKG" \
+                || warn "CUDA package install returned non-zero."
+        else
+            warn "No versioned cuda-toolkit found; trying cuda-toolkit (latest)."
+            sudo apt-get install -y cuda-toolkit \
+                || warn "cuda-toolkit install returned non-zero."
+        fi
     fi
 
     # Configure env BEFORE checking nvcc
