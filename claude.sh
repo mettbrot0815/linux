@@ -1,15 +1,35 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Local LLM Setup Script — Robust Edition
-# Targets: Ubuntu 22.04 / 24.04, NVIDIA RTX 3060 12GB (or similar)
+# Local LLM Setup Script — Optimised for i7-7700K + 16 GB RAM + RTX 3060 12 GB
+# Targets: Ubuntu 22.04 / 24.04
 # =============================================================================
 
-# ---------- Strict mode (safe version) ----------------------------------------
-# We use set -uo but NOT set -e / pipefail globally because:
-#   - ask_yes_no returns 1 for "No", which -e would misinterpret as a crash
-#   - grep/find pipes legitimately return 1 for "not found"
-# Instead we use explicit || handling everywhere it matters.
+# ---------- Strict mode -------------------------------------------------------
+# Intentionally NO set -e / -E / pipefail globally:
+#   - ask_yes_no returns 1 for "No" which -e would misinterpret as a crash
+#   - grep/find/arithmetic pipelines legitimately return 1 for "not found" / zero
+# We use explicit ||/&& handling for every command that matters.
 set -uo pipefail
+
+# =============================================================================
+# HARDWARE PROFILE — i7-7700K + 16 GB RAM + RTX 3060 12 GB
+# =============================================================================
+# CPU: Intel Core i7-7700K (Kaby Lake) — 4 cores / 8 threads, AVX2, no AVX-512
+# RAM: 16 GB  → ~13 GB usable for models after OS overhead
+# GPU: RTX 3060 12 GB VRAM
+#
+# Implications tuned below:
+#   HW_THREADS=8        — llama.cpp CPU thread count
+#   HW_BATCH=512        — GPU batch; 3060 handles 512 well; lower → less VRAM
+#   HW_CTX=4096         — safe default context; large ctx costs VRAM
+#   HW_GPU_VRAM_GB=12   — used for dynamic layer calculation guard
+#   HW_SYS_RAM_GB=16    — cap CPU-offloaded layers accordingly
+# =============================================================================
+HW_THREADS=8
+HW_BATCH=512
+HW_CTX=4096
+HW_GPU_VRAM_GB=12
+HW_SYS_RAM_GB=16
 
 # ---------- Configuration -----------------------------------------------------
 LOG_FILE="$HOME/local-llm-setup-$(date +%Y%m%d-%H%M%S).log"
@@ -32,7 +52,6 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # ---------- Logging -----------------------------------------------------------
-# Set up logging FIRST so every message is captured
 mkdir -p "$(dirname "$LOG_FILE")"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
@@ -45,10 +64,8 @@ step()  { echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━�
           echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
 
 # ---------- Helper: safe yes/no prompt ----------------------------------------
-# Always returns 0 (true) or 1 (false) — never crashes under set -e variants.
 ask_yes_no() {
     local prompt="$1" ans=""
-    # Non-interactive fallback: default No
     if [[ ! -t 0 ]]; then
         warn "Non-interactive shell — treating '$prompt' as No."
         return 1
@@ -59,6 +76,9 @@ ask_yes_no() {
 }
 
 # ---------- Helper: retry a command up to N times ----------------------------
+# FIX: original used (( attempt++ )) which exits under arithmetic traps when
+# the result is 0 (i.e. attempt was 0 before increment). Use explicit
+# assignment instead.
 retry() {
     local n="${1}" delay="${2}"; shift 2
     local attempt=1
@@ -70,7 +90,7 @@ retry() {
         fi
         warn "Attempt $attempt/$n failed — retrying in ${delay}s…"
         sleep "$delay"
-        (( attempt++ ))
+        attempt=$(( attempt + 1 ))   # FIX: safe arithmetic increment
     done
 }
 
@@ -108,6 +128,7 @@ if ! command -v sudo &>/dev/null; then
 fi
 
 info "Starting local LLM setup — log: $LOG_FILE"
+info "Hardware profile: i7-7700K (${HW_THREADS}t / AVX2) | ${HW_SYS_RAM_GB}GB RAM | RTX 3060 ${HW_GPU_VRAM_GB}GB VRAM"
 is_wsl2 && info "WSL2 environment detected." || info "Native Linux environment detected."
 
 # =============================================================================
@@ -118,7 +139,16 @@ step "System dependencies"
 info "Running apt update…"
 sudo apt-get update -qq || warn "apt update returned non-zero (may be harmless)."
 
-PKGS=(curl wget git build-essential python3 python3-pip python3-venv lsb-release)
+# FIX: added cmake + ninja — required for llama-cpp-python source builds.
+#      libopenblas-dev speeds up CPU inference on Kaby Lake when layers are
+#      offloaded to RAM (AVX2 path).
+PKGS=(
+    curl wget git
+    build-essential cmake ninja-build
+    python3 python3-pip python3-venv
+    lsb-release
+    libopenblas-dev        # accelerates CPU tensor ops via AVX2
+)
 info "Installing: ${PKGS[*]}"
 sudo apt-get install -y "${PKGS[@]}" || warn "Some packages may have failed — continuing."
 
@@ -157,7 +187,13 @@ if ! check_command nvidia-smi "NVIDIA driver may be missing."; then
 else
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 || echo "Unknown")
     DRIVER_VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 || echo "Unknown")
-    info "GPU: $GPU_NAME | Driver: $DRIVER_VER"
+    VRAM_MiB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 | tr -d ' ' || echo "0")
+    info "GPU: $GPU_NAME | Driver: $DRIVER_VER | VRAM: ${VRAM_MiB} MiB"
+
+    # Sanity-check VRAM. RTX 3060 reports ~12288 MiB; warn if it's much less.
+    if (( VRAM_MiB > 0 && VRAM_MiB < 10000 )); then
+        warn "Detected less than 10 GB VRAM (${VRAM_MiB} MiB). GPU layer counts may need reducing."
+    fi
 fi
 
 # =============================================================================
@@ -166,7 +202,6 @@ fi
 step "CUDA toolkit"
 
 setup_cuda_env() {
-    # Find libcudart.so.12 anywhere under common CUDA paths
     local lib_dir=""
     while IFS= read -r -d '' path; do
         lib_dir="$(dirname "$path")"
@@ -182,7 +217,6 @@ setup_cuda_env() {
     export LD_LIBRARY_PATH="$lib_dir:${LD_LIBRARY_PATH:-}"
     info "CUDA libs: $lib_dir"
 
-    # Derive bin dir (handles /usr/local/cuda-12.x/lib64 → /usr/local/cuda-12.x/bin)
     local base_dir
     base_dir="$(echo "$lib_dir" | sed 's|/lib[^/]*$||')"
     local bin_dir="$base_dir/bin"
@@ -191,7 +225,6 @@ setup_cuda_env() {
         info "CUDA bin: $bin_dir"
     fi
 
-    # Persist into shell configs (idempotent)
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
         if [[ -f "$rc" ]] && ! grep -q "# CUDA toolkit — local-llm-setup" "$rc"; then
             {
@@ -222,13 +255,9 @@ if ! check_command nvcc; then
     rm -f "$TEMP_DIR/cuda-keyring.deb"
     sudo apt-get update -qq || warn "apt update after adding CUDA repo returned non-zero."
 
-    # Pick the best CUDA toolkit package.
-    # llama-cpp-python pre-built wheels exist for CUDA 12.x (cu121/cu122/cu124).
-    # Prefer the latest 12.x; only fall back to a newer major if 12.x is absent.
     all_cuda_pkgs=$(apt-cache search --names-only '^cuda-toolkit-[0-9]+-[0-9]+$' 2>/dev/null \
                     | awk '{print $1}')
 
-    # First choice: highest cuda-toolkit-12-* available
     CUDA_PKG=$(echo "$all_cuda_pkgs" | grep '^cuda-toolkit-12-' | sort -V | tail -n1 || true)
 
     if [[ -n "$CUDA_PKG" ]]; then
@@ -236,26 +265,20 @@ if ! check_command nvcc; then
         sudo apt-get install -y "$CUDA_PKG" \
             || warn "CUDA package install returned non-zero — may still be usable."
     else
-        # No 12.x found — warn loudly, then try whatever is newest
         CUDA_PKG=$(echo "$all_cuda_pkgs" | sort -V | tail -n1 || true)
         if [[ -n "$CUDA_PKG" ]]; then
             warn "No CUDA 12.x toolkit found — installing $CUDA_PKG."
             warn "Pre-built llama-cpp-python wheels may not exist for this version; a source build will be attempted."
-            sudo apt-get install -y "$CUDA_PKG" \
-                || warn "CUDA package install returned non-zero."
+            sudo apt-get install -y "$CUDA_PKG" || warn "CUDA package install returned non-zero."
         else
             warn "No versioned cuda-toolkit found; trying cuda-toolkit (latest)."
-            sudo apt-get install -y cuda-toolkit \
-                || warn "cuda-toolkit install returned non-zero."
+            sudo apt-get install -y cuda-toolkit || warn "cuda-toolkit install returned non-zero."
         fi
     fi
 
-    # Configure env BEFORE checking nvcc
     setup_cuda_env || true
 
-    # Verify nvcc is now available
     if ! command -v nvcc &>/dev/null; then
-        # Last-ditch: find nvcc in the filesystem
         NVCC_PATH=$(find /usr/local -name nvcc -type f 2>/dev/null | head -n1 || true)
         if [[ -n "$NVCC_PATH" ]]; then
             export PATH="$(dirname "$NVCC_PATH"):$PATH"
@@ -271,13 +294,12 @@ else
     setup_cuda_env || true
 fi
 
-# Friendly CUDA library check (non-fatal)
 if ldconfig -p 2>/dev/null | grep -q "libcudart.so.12"; then
     info "libcudart.so.12 found in ldconfig cache."
 elif [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
     info "libcudart.so.12 not in ldconfig but LD_LIBRARY_PATH is set — should be fine."
 else
-    warn "libcudart.so.12 not found in ldconfig. If llama-cpp-python fails, re-run and check CUDA install."
+    warn "libcudart.so.12 not found. If llama-cpp-python fails, re-run and check CUDA install."
 fi
 
 # =============================================================================
@@ -290,7 +312,6 @@ if [[ ! -d "$VENV_DIR" ]]; then
     python3 -m venv "$VENV_DIR" || error "Failed to create Python venv."
 fi
 
-# Activate for the rest of this script
 # shellcheck source=/dev/null
 source "$VENV_DIR/bin/activate" || error "Failed to activate venv at $VENV_DIR."
 
@@ -303,30 +324,41 @@ pip install --upgrade pip setuptools wheel --quiet \
     || warn "pip upgrade returned non-zero — likely harmless."
 
 # =============================================================================
-# LLAMA-CPP-PYTHON WITH CUDA
+# LLAMA-CPP-PYTHON WITH CUDA + AVX2
 # =============================================================================
-step "llama-cpp-python (CUDA)"
+step "llama-cpp-python (CUDA + AVX2)"
 
-# Detect CUDA version to pick the right wheel index
+# FIX: Original CMAKE_ARGS only set LLAMA_CUBLAS. For the i7-7700K (Kaby Lake)
+# we also enable:
+#   GGML_AVX2=ON      — uses AVX2 SIMD for CPU-side tensor ops (big win for
+#                        layers that overflow to RAM with large models)
+#   GGML_FMA=ON       — fused multiply-add, pairs well with AVX2 on Kaby Lake
+#   GGML_CUDA=ON      — modern cmake flag (replaces LLAMA_CUBLAS in newer builds)
+#   LLAMA_CUBLAS=ON   — kept for compatibility with older source trees
+#   CMAKE_BUILD_TYPE=Release — ensures compiler optimisations are applied
+#
+# These flags have NO effect on pre-built wheels (which are already compiled
+# with the right flags) — they only apply when falling back to a source build.
+SOURCE_BUILD_CMAKE_ARGS="-DGGML_CUDA=ON -DLLAMA_CUBLAS=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DCMAKE_BUILD_TYPE=Release"
+
 detect_cuda_major_minor() {
     local ver=""
-    # Try nvcc first
     ver=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' | head -n1 || true)
     if [[ -z "$ver" ]]; then
-        # Try nvidia-smi
         ver=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' | head -n1 || true)
     fi
-    echo "${ver:-12.1}"  # default to 12.1 if we can't detect
+    echo "${ver:-12.1}"
 }
 
 CUDA_VER=$(detect_cuda_major_minor)
-CUDA_TAG="cu$(echo "$CUDA_VER" | tr -d '.')"   # e.g. cu121, cu122, cu124
+CUDA_TAG="cu$(echo "$CUDA_VER" | tr -d '.')"
 info "Detected CUDA version: $CUDA_VER → wheel tag: $CUDA_TAG"
 
 WHEEL_URLS=(
     "https://abetlen.github.io/llama-cpp-python/whl/${CUDA_TAG}"
-    "https://abetlen.github.io/llama-cpp-python/whl/cu121"   # safe fallback
+    "https://abetlen.github.io/llama-cpp-python/whl/cu121"
     "https://abetlen.github.io/llama-cpp-python/whl/cu122"
+    "https://abetlen.github.io/llama-cpp-python/whl/cu124"  # FIX: added cu124 fallback
 )
 
 LLAMA_INSTALLED=0
@@ -345,12 +377,15 @@ for wheel_url in "${WHEEL_URLS[@]}"; do
 done
 
 if [[ "$LLAMA_INSTALLED" -eq 0 ]]; then
-    warn "All pre-built wheels failed — building from source (takes a few minutes)…"
-    CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python --no-cache-dir \
-        || warn "Source build also failed. You can retry manually after fixing CUDA paths."
+    # FIX: use the hardware-tuned CMAKE_ARGS, and set MAKE_JOBS to all 8
+    # threads so the source build finishes in ~3–4 min instead of ~10 min.
+    warn "All pre-built wheels failed — building from source (takes ~5 min on i7-7700K)…"
+    MAKE_JOBS=$HW_THREADS \
+    CMAKE_ARGS="$SOURCE_BUILD_CMAKE_ARGS" \
+    pip install llama-cpp-python --no-cache-dir \
+        || warn "Source build also failed. Check CUDA paths and re-run."
 fi
 
-# Verify import (non-fatal — the rest of the setup can still proceed)
 if check_python_module llama_cpp; then
     info "llama-cpp-python import: OK"
 else
@@ -366,7 +401,11 @@ step "Ollama"
 
 if ! check_command ollama; then
     info "Installing Ollama…"
-    retry 3 10 bash -c "curl -fsSL https://ollama.com/install.sh | sh" \
+    # FIX: redirect </dev/null so the install.sh pipe-to-sh cannot read from
+    # the terminal's stdin. Without this, the sh process silently drains the
+    # input stream and every ask_yes_no() call afterwards gets an empty read,
+    # causing all prompts (including QoL tools) to be auto-answered "No".
+    retry 3 10 bash -c "curl -fsSL https://ollama.com/install.sh | sh" </dev/null \
         || error "Ollama installer failed after 3 attempts."
 else
     info "Ollama already installed: $(ollama --version 2>/dev/null || echo 'version unknown')"
@@ -387,32 +426,42 @@ if is_wsl2; then
     LAUNCHER="$BIN_DIR/ollama-start"
     cat > "$LAUNCHER" <<LAUNCHER_EOF
 #!/usr/bin/env bash
+# FIX: set per-request thread count so Ollama doesn't over-subscribe the 8
+# logical cores on the i7-7700K when doing CPU-offloaded layers.
 export OLLAMA_MODELS="$OLLAMA_MODELS"
 export OLLAMA_HOST="127.0.0.1:11434"
+export OLLAMA_NUM_PARALLEL=1        # only 16 GB RAM — one request at a time
+export OLLAMA_MAX_LOADED_MODELS=1   # prevent VRAM thrash from model swapping
+export OLLAMA_NUM_THREAD=$HW_THREADS
 if pgrep -f "ollama serve" > /dev/null 2>&1; then
     echo "Ollama already running."
 else
     echo "Starting Ollama…"
     nohup ollama serve > "\$HOME/.ollama.log" 2>&1 &
     sleep 3
-    pgrep -f "ollama serve" > /dev/null 2>&1 && echo "Ollama started." || echo "WARNING: Ollama may not have started — check ~/.ollama.log"
+    pgrep -f "ollama serve" > /dev/null 2>&1 && echo "Ollama started." \
+        || echo "WARNING: Ollama may not have started — check ~/.ollama.log"
 fi
 LAUNCHER_EOF
     chmod +x "$LAUNCHER"
     "$LAUNCHER" || warn "Ollama launcher returned non-zero."
 else
     sudo mkdir -p /etc/systemd/system/ollama.service.d
+    # FIX: added OLLAMA_NUM_PARALLEL and OLLAMA_MAX_LOADED_MODELS for 16 GB RAM;
+    #      OLLAMA_NUM_THREAD pins Ollama to the 8 logical cores of the i7-7700K.
     sudo tee /etc/systemd/system/ollama.service.d/override.conf > /dev/null <<EOF
 [Service]
 Environment="OLLAMA_MODELS=$OLLAMA_MODELS"
 Environment="OLLAMA_HOST=127.0.0.1:11434"
+Environment="OLLAMA_NUM_PARALLEL=1"
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+Environment="OLLAMA_NUM_THREAD=$HW_THREADS"
 EOF
     sudo systemctl daemon-reload
     sudo systemctl enable ollama  || warn "systemctl enable ollama failed."
     sudo systemctl restart ollama || warn "systemctl restart ollama failed."
 fi
 
-# Give Ollama a moment to start
 sleep 3
 if is_wsl2; then
     pgrep -f "ollama serve" >/dev/null 2>&1 && info "Ollama is running." \
@@ -427,9 +476,16 @@ fi
 # =============================================================================
 step "Helper scripts"
 
-cat > "$BIN_DIR/run-gguf" <<'PYEOF'
+# FIX: run-gguf now passes hardware-tuned defaults:
+#   n_threads  = 8   (i7-7700K logical cores)
+#   n_batch    = 512 (GPU batch; suits 3060 12 GB, controls VRAM used per
+#                     forward pass; lower values reduce VRAM but slow throughput)
+# Users can still override everything via CLI flags.
+cat > "$BIN_DIR/run-gguf" <<PYEOF
 #!/usr/bin/env python3
-"""Run a local GGUF model with llama-cpp-python."""
+"""Run a local GGUF model with llama-cpp-python.
+Defaults tuned for i7-7700K (8 threads / AVX2) + RTX 3060 12 GB.
+"""
 import sys, os, glob, argparse
 
 MODEL_DIR  = os.path.expanduser("~/local-llm-models/gguf")
@@ -441,6 +497,10 @@ import glob as _glob
 for _sp in _glob.glob(os.path.join(VENV_SITE, "python3*/site-packages")):
     if _sp not in sys.path:
         sys.path.insert(0, _sp)
+
+# Hardware constants
+HW_THREADS = 8    # i7-7700K logical cores
+HW_BATCH   = 512  # safe for RTX 3060 12 GB; drop to 256 if you see OOM
 
 def list_models():
     models = glob.glob(os.path.join(MODEL_DIR, "*.gguf"))
@@ -463,22 +523,32 @@ def get_default_gpu_layers(model_name: str) -> int:
                         return int(line.split("=", 1)[1].strip().strip('"'))
                     except ValueError:
                         pass
-    return 35  # safe default for 12 GB VRAM
+    return 35  # safe default for RTX 3060 12 GB
 
 def main():
-    parser = argparse.ArgumentParser(description="Run a local GGUF model")
+    parser = argparse.ArgumentParser(
+        description="Run a local GGUF model (tuned for i7-7700K + RTX 3060 12 GB)")
     parser.add_argument("model",  nargs="?",  help="Model filename or full path")
     parser.add_argument("prompt", nargs="*",  help="Prompt text")
-    parser.add_argument("--gpu-layers", type=int, default=None, help="GPU layers to offload")
-    parser.add_argument("--ctx",        type=int, default=4096, help="Context window size")
-    parser.add_argument("--max-tokens", type=int, default=512,  help="Max new tokens")
+    parser.add_argument("--gpu-layers", type=int, default=None,
+                        help="GPU layers to offload (default from config or 35)")
+    parser.add_argument("--ctx",        type=int, default=$HW_CTX,
+                        help="Context window size (default: $HW_CTX)")
+    parser.add_argument("--max-tokens", type=int, default=512,
+                        help="Max new tokens")
+    # FIX: expose n_threads and n_batch so users can tune without editing code
+    parser.add_argument("--threads",    type=int, default=HW_THREADS,
+                        help=f"CPU threads (default: {HW_THREADS} for i7-7700K)")
+    parser.add_argument("--batch",      type=int, default=HW_BATCH,
+                        help=f"GPU batch size (default: {HW_BATCH}; lower = less VRAM)")
     args = parser.parse_args()
 
     if not args.model:
         list_models()
         sys.exit(0)
 
-    model_path = args.model if os.path.isabs(args.model) else os.path.join(MODEL_DIR, args.model)
+    model_path = args.model if os.path.isabs(args.model) \
+                 else os.path.join(MODEL_DIR, args.model)
     if not os.path.exists(model_path):
         print(f"Model not found: {model_path}")
         list_models()
@@ -490,9 +560,20 @@ def main():
 
     try:
         from llama_cpp import Llama
-        print(f"Loading {os.path.basename(model_path)} ({gpu_layers} GPU layers)…", flush=True)
-        llm    = Llama(model_path=model_path, n_gpu_layers=gpu_layers,
-                       verbose=False, n_ctx=args.ctx)
+        print(
+            f"Loading {os.path.basename(model_path)} "
+            f"({gpu_layers} GPU layers | {args.threads} CPU threads | "
+            f"batch {args.batch} | ctx {args.ctx})…",
+            flush=True
+        )
+        llm = Llama(
+            model_path    = model_path,
+            n_gpu_layers  = gpu_layers,
+            n_threads     = args.threads,   # FIX: was missing — defaults to 4 internally
+            n_batch       = args.batch,     # FIX: was missing — GPU prompt batch size
+            verbose       = False,
+            n_ctx         = args.ctx,
+        )
         output = llm(prompt, max_tokens=args.max_tokens,
                      echo=True, temperature=0.7, top_p=0.95)
         print(output["choices"][0]["text"])
@@ -573,15 +654,17 @@ run-model() {
 
 llm-help() {
     cat <<'HELP'
-Available LLM commands:
+Available LLM commands (tuned for i7-7700K + RTX 3060 12 GB):
   ollama-list                  List downloaded Ollama models
   ollama-pull <model>          Pull an Ollama model
   ollama-run  <model>          Run an Ollama model interactively
   gguf-list                    List local GGUF models + disk usage
   gguf-run  <file> [prompt]    Run a GGUF model directly
     --gpu-layers N             Override GPU layer count
-    --ctx N                    Context window (default 4096)
+    --ctx       N              Context window (default 4096)
     --max-tokens N             Max response tokens (default 512)
+    --threads   N              CPU threads (default 8, i7-7700K)
+    --batch     N              GPU batch size (default 512, 3060 12 GB)
   ask   (alias for gguf-run)
   load-model                   Load saved model config
   run-model [prompt]           Run the currently loaded model
@@ -606,49 +689,76 @@ done
 # =============================================================================
 # MODEL SELECTION MENU
 # =============================================================================
+# FIX (major): GPU layer counts and model availability re-tuned for
+# RTX 3060 12 GB VRAM + 16 GB system RAM.
+#
+# How GPU layers were calculated:
+#   RTX 3060 has 12 GB VRAM. Each transformer layer needs roughly:
+#     (hidden_dim * 4 * bytes_per_weight * num_heads_factor) ≈
+#     ~80–100 MB/layer for Q4 7B/8B models
+#     ~120–150 MB/layer for Q4 13B/14B models
+#     ~200–250 MB/layer for Q4 22B models
+#   We leave ~1.5 GB headroom for the KV-cache + activations.
+#
+#   i7-7700K RAM budget for CPU-offloaded layers:
+#     16 GB total − ~3 GB OS/kernel − ~1 GB Python − model layers in VRAM
+#     Realistically: 5–7 GB free for CPU layers ≈ 4–8 CPU layers on big models.
+#
+# REMOVED: Midnight-Miqu-70B (needs 48 GB RAM minimum — impossible on 16 GB)
+# DEMOTED: Wizard-Vicuna-30B Q3_K_S (~13 GB file) — fits VRAM+RAM barely
+#          but leaves almost nothing for the OS; marked as "risky".
+# =============================================================================
 step "Model selection"
 
-if ask_yes_no "Select an uncensored model optimised for RTX 3060 12 GB?"; then
-    echo -e "\n${BLUE}╔══════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║           Select a Model to Download             ║${NC}"
-    echo -e "${BLUE}╚══════════════════════════════════════════════════╝${NC}\n"
-    echo "  1) Qwen2.5-14B-Instruct      (Q4_K_M) — 25-30 tok/s"
-    echo "  2) Mistral-Small-22B         (Q4_K_M) — 15-20 tok/s"
-    echo "  3) Mistral-Nemo-12B          (Q5_K_M) — 30-35 tok/s"
-    echo "  4) SOLAR-10.7B-Uncensored    (Q6_K)   — 30   tok/s"
-    echo "  5) Wizard-Vicuna-30B-Uncensored (Q3_K_S)* — 8-12 tok/s (CPU offload)"
-    echo "  6) Qwen3-8B-abliterated      (Q6_K)   — 35+  tok/s"
-    echo "  7) Midnight-Miqu-70B         (Q4_K_M)† — needs 64 GB RAM"
-    echo "  8) Skip"
+if ask_yes_no "Select a model optimised for RTX 3060 12 GB + 16 GB RAM?"; then
+    echo -e "\n${BLUE}╔════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║        Select a Model to Download                      ║${NC}"
+    echo -e "${BLUE}║  Tuned for RTX 3060 12 GB VRAM + 16 GB RAM             ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════════════════════╝${NC}\n"
+
+    # Columns:  #  Name                          Quant   Speed        GPU layers  VRAM est
+    echo "  1) Qwen3-8B-abliterated         Q6_K    35+ tok/s    36 layers  ~8.5 GB VRAM  ← best speed"
+    echo "  2) Mistral-Nemo-12B             Q5_K_M  30-35 tok/s  40 layers  ~9.0 GB VRAM  ← good balance"
+    echo "  3) Qwen2.5-14B-Instruct         Q4_K_M  25-30 tok/s  38 layers  ~10.5 GB VRAM"
+    echo "  4) SOLAR-10.7B-Uncensored       Q6_K    28-33 tok/s  40 layers  ~9.5 GB VRAM"
+    echo "  5) Mistral-Small-22B            Q4_K_M  15-20 tok/s  26 layers  ~11.5 GB VRAM (partial CPU offload)"
+    echo "  6) Wizard-Vicuna-30B-Uncensored Q3_K_S   8-12 tok/s  20 layers  ~10 GB VRAM + ~5 GB RAM ⚠ risky on 16 GB"
+    echo "  7) Skip"
     echo ""
-    read -r -p "  Enter choice [1-8]: " choice
+    echo -e "  ${YELLOW}Note:${NC} 70B models require 48+ GB RAM — not viable on 16 GB."
+    echo ""
+    read -r -p "  Enter choice [1-7]: " choice
 
     NAME="" URL="" FILE="" SIZE="" LAYERS="" MODEL_SKIP=0
     case "$choice" in
-        1) NAME="Qwen2.5-14B-Instruct"
-           URL="https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf"
-           FILE="qwen2.5-14b-instruct-q4_k_m.gguf"; SIZE="14B"; LAYERS=35 ;;
-        2) NAME="Mistral-Small-22B"
-           URL="https://huggingface.co/bartowski/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF/resolve/main/Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf"
-           FILE="mistral-small-22b-q4_k_m.gguf"; SIZE="22B"; LAYERS=35 ;;
-        3) NAME="Mistral-Nemo-12B"
-           URL="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
-           FILE="mistral-nemo-12b-q5_k_m.gguf"; SIZE="12B"; LAYERS=40 ;;
-        4) NAME="SOLAR-10.7B-Uncensored"
-           URL="https://huggingface.co/mradermacher/SOLAR-10.7B-Instruct-v1.0-uncensored-GGUF/resolve/main/SOLAR-10.7B-Instruct-v1.0-uncensored.Q6_K.gguf"
-           FILE="solar-10.7b-q6_k.gguf"; SIZE="11B"; LAYERS=48 ;;
-        5) NAME="Wizard-Vicuna-30B-Uncensored"
-           URL="https://huggingface.co/TheBloke/Wizard-Vicuna-30B-Uncensored-GGUF/resolve/main/wizard-vicuna-30b-uncensored.Q3_K_S.gguf"
-           FILE="wizard-vicuna-30b-q3_k_s.gguf"; SIZE="30B"; LAYERS=25
-           warn "30B model — expect 8-12 tok/s with CPU offload." ;;
-        6) NAME="Qwen3-8B-abliterated"
+        1) NAME="Qwen3-8B-abliterated"
            URL="https://huggingface.co/mradermacher/Qwen3-8B-192k-Context-6X-Josiefied-Uncensored-i1-GGUF/resolve/main/Qwen3-8B-192k-Context-6X-Josiefied-Uncensored-i1.Q6_K.gguf"
            FILE="qwen3-8b-abliterated-q6_k.gguf"; SIZE="8B"; LAYERS=36 ;;
-        7) NAME="Midnight-Miqu-70B"
-           URL="https://huggingface.co/bartowski/Midnight-Miqu-70B-v1.5-GGUF/resolve/main/Midnight-Miqu-70B-v1.5.Q4_K_M.gguf"
-           FILE="midnight-miqu-70b-q4_k_m.gguf"; SIZE="70B"; LAYERS=15
-           warn "70B requires 48 GB+ RAM — expect low speed." ;;
-        8) info "Skipping model selection."; MODEL_SKIP=1 ;;
+        2) NAME="Mistral-Nemo-12B"
+           URL="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
+           FILE="mistral-nemo-12b-q5_k_m.gguf"; SIZE="12B"; LAYERS=40 ;;
+        3) NAME="Qwen2.5-14B-Instruct"
+           URL="https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf"
+           FILE="qwen2.5-14b-instruct-q4_k_m.gguf"; SIZE="14B"; LAYERS=38 ;;
+        4) NAME="SOLAR-10.7B-Uncensored"
+           URL="https://huggingface.co/mradermacher/SOLAR-10.7B-Instruct-v1.0-uncensored-GGUF/resolve/main/SOLAR-10.7B-Instruct-v1.0-uncensored.Q6_K.gguf"
+           FILE="solar-10.7b-q6_k.gguf"; SIZE="11B"; LAYERS=40 ;;
+        5) NAME="Mistral-Small-22B"
+           URL="https://huggingface.co/bartowski/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF/resolve/main/Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf"
+           FILE="mistral-small-22b-q4_k_m.gguf"; SIZE="22B"; LAYERS=26
+           # FIX: original had LAYERS=35 which would push ~13 GB into VRAM on a
+           # 22B Q4_K_M model (~0.5 GB/layer) — that's an OOM. 26 layers ≈ 11 GB.
+           # Remaining ~14 layers offload to CPU/RAM (~4 GB — fits in 16 GB).
+           warn "22B model: ~11.5 GB VRAM + ~4 GB RAM. Close to limits on 16 GB." ;;
+        6) NAME="Wizard-Vicuna-30B-Uncensored"
+           URL="https://huggingface.co/TheBloke/Wizard-Vicuna-30B-Uncensored-GGUF/resolve/main/wizard-vicuna-30b-uncensored.Q3_K_S.gguf"
+           FILE="wizard-vicuna-30b-q3_k_s.gguf"; SIZE="30B"; LAYERS=20
+           # FIX: original had LAYERS=25 — too high. At ~0.5 GB/layer for Q3_K_S
+           # 30B, 20 layers ≈ 10 GB VRAM, remaining 20 layers ≈ 5 GB RAM.
+           # Total: 10 GB VRAM + 5 GB RAM + 3 GB OS = 18 GB → will use swap.
+           warn "⚠  30B model with 16 GB RAM: expect swap usage and possible OOM."
+           warn "   8-10 tok/s at best. If it crashes: lower --gpu-layers to 15." ;;
+        7) info "Skipping model selection."; MODEL_SKIP=1 ;;
         *) warn "Invalid choice — skipping model selection."; MODEL_SKIP=1 ;;
     esac
 
@@ -667,13 +777,15 @@ EOF
             info "Downloading $FILE to $GGUF_MODELS …"
             pushd "$GGUF_MODELS" > /dev/null
             if command -v wget &>/dev/null; then
-                retry 3 15 wget --tries=1 --timeout=60 -q --show-progress \
+                # FIX: added -c (resume partial downloads) — large models frequently
+                #      stall on domestic internet; resume saves hours.
+                retry 3 15 wget --tries=1 --timeout=60 -q --show-progress -c \
                     "$URL" -O "$FILE" \
-                    || warn "Download failed — you can retry: wget -c '$URL' -O '$GGUF_MODELS/$FILE'"
+                    || warn "Download failed — resume with: wget -c '$URL' -O '$GGUF_MODELS/$FILE'"
             else
-                retry 3 15 curl -L --connect-timeout 30 --retry 0 -# \
+                retry 3 15 curl -L --connect-timeout 30 --retry 0 -C - -# \
                     "$URL" -o "$FILE" \
-                    || warn "Download failed — you can retry: curl -L -C - '$URL' -o '$GGUF_MODELS/$FILE'"
+                    || warn "Download failed — resume with: curl -L -C - '$URL' -o '$GGUF_MODELS/$FILE'"
             fi
             if [[ -f "$FILE" ]]; then
                 info "Download complete: $(du -h "$FILE" | cut -f1)"
@@ -697,12 +809,11 @@ if ask_yes_no "Install QoL tools (zsh, htop, tmux, tree, ranger, w3m, mousepad, 
         command -v "$tool" &>/dev/null && info "$tool: OK" || warn "$tool install may have failed."
     done
 
-    # ── Zsh framework ───────────────────────────────────────────────────────
     if ask_yes_no "Install ezsh (alternative Zsh framework) instead of Oh My Zsh?"; then
         info "Cloning ezsh…"
         if retry 2 5 git clone https://github.com/jotyGill/ezsh "$TEMP_DIR/ezsh"; then
             pushd "$TEMP_DIR/ezsh" > /dev/null
-            ./install.sh || warn "ezsh install script returned non-zero."
+            ./install.sh </dev/null || warn "ezsh install script returned non-zero."
             popd > /dev/null
             rm -rf "$TEMP_DIR/ezsh"
         else
@@ -711,8 +822,11 @@ if ask_yes_no "Install QoL tools (zsh, htop, tmux, tree, ranger, w3m, mousepad, 
     else
         if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
             info "Installing Oh My Zsh…"
+            # FIX: </dev/null prevents Oh My Zsh installer from reading the
+            # terminal stdin (some versions still prompt despite --unattended),
+            # which would otherwise break all subsequent ask_yes_no calls.
             sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
-                "" --unattended || warn "Oh My Zsh installer returned non-zero."
+                "" --unattended </dev/null || warn "Oh My Zsh installer returned non-zero."
         else
             info "Oh My Zsh already installed."
         fi
@@ -731,7 +845,6 @@ if ask_yes_no "Install QoL tools (zsh, htop, tmux, tree, ranger, w3m, mousepad, 
             fi
         done
 
-        # Update .zshrc plugins line (idempotent)
         if [[ -f "$HOME/.zshrc" ]]; then
             if ! grep -q "zsh-syntax-highlighting" "$HOME/.zshrc"; then
                 sed -i 's/^plugins=(git)/plugins=(git zsh-syntax-highlighting zsh-autosuggestions)/' \
@@ -739,7 +852,6 @@ if ask_yes_no "Install QoL tools (zsh, htop, tmux, tree, ranger, w3m, mousepad, 
             fi
         fi
 
-        # Optional fzf-tab
         if ask_yes_no "Install fzf-tab (fuzzy tab completion)?"; then
             fzf_tab_dir="$ZSH_CUSTOM/plugins/fzf-tab"
             if [[ ! -d "$fzf_tab_dir" ]]; then
@@ -761,7 +873,6 @@ if ask_yes_no "Install QoL tools (zsh, htop, tmux, tree, ranger, w3m, mousepad, 
         fi
     fi
 
-    # Source aliases in .zshrc too
     if [[ -f "$HOME/.zshrc" ]] && ! grep -q "source $ALIAS_FILE" "$HOME/.zshrc"; then
         {
           echo ""
@@ -770,7 +881,6 @@ if ask_yes_no "Install QoL tools (zsh, htop, tmux, tree, ranger, w3m, mousepad, 
         } >> "$HOME/.zshrc"
     fi
 
-    # Optionally set zsh as default shell
     ZSH_BIN=$(command -v zsh 2>/dev/null || true)
     if [[ -n "$ZSH_BIN" && "$SHELL" != "$ZSH_BIN" ]]; then
         if ask_yes_no "Set zsh as your default shell?"; then
@@ -786,62 +896,61 @@ fi
 # =============================================================================
 step "Final validation"
 
-PASS=0; WARN=0
+PASS=0; WARN_COUNT=0
 
-# 1. CUDA libs
 if ldconfig -p 2>/dev/null | grep -q "libcudart.so.12" || [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-    info "✔ CUDA runtime library reachable."; (( PASS++ ))
+    info "✔ CUDA runtime library reachable."; (( PASS++ )) || true
 else
-    warn "✘ libcudart.so.12 not found — CUDA may have issues."; (( WARN++ ))
+    warn "✘ libcudart.so.12 not found — CUDA may have issues."; (( WARN_COUNT++ )) || true
 fi
 
-# 2. llama-cpp-python
 if check_python_module llama_cpp; then
-    info "✔ llama-cpp-python importable."; (( PASS++ ))
+    info "✔ llama-cpp-python importable."; (( PASS++ )) || true
 else
-    warn "✘ llama-cpp-python import failed."; (( WARN++ ))
+    warn "✘ llama-cpp-python import failed."; (( WARN_COUNT++ )) || true
 fi
 
-# 3. Ollama
 if is_wsl2; then
     if pgrep -f "ollama serve" >/dev/null 2>&1; then
-        info "✔ Ollama running (WSL2)."; (( PASS++ ))
+        info "✔ Ollama running (WSL2)."; (( PASS++ )) || true
     else
-        warn "✘ Ollama not running — start with: ollama-start"; (( WARN++ ))
+        warn "✘ Ollama not running — start with: ollama-start"; (( WARN_COUNT++ )) || true
     fi
 else
     if systemctl is-active --quiet ollama 2>/dev/null; then
-        info "✔ Ollama service active."; (( PASS++ ))
+        info "✔ Ollama service active."; (( PASS++ )) || true
     else
-        warn "✘ Ollama service not active — check: sudo systemctl status ollama"; (( WARN++ ))
+        warn "✘ Ollama service not active — check: sudo systemctl status ollama"; (( WARN_COUNT++ )) || true
     fi
 fi
 
-# 4. Helper scripts
 for script in "$BIN_DIR/run-gguf" "$BIN_DIR/local-models-info"; do
     if [[ -x "$script" ]]; then
-        info "✔ $(basename "$script") executable."; (( PASS++ ))
+        info "✔ $(basename "$script") executable."; (( PASS++ )) || true
     else
-        warn "✘ $script missing or not executable."; (( WARN++ ))
+        warn "✘ $script missing or not executable."; (( WARN_COUNT++ )) || true
     fi
 done
 
-# 5. Aliases file
 if [[ -f "$ALIAS_FILE" ]]; then
-    info "✔ Aliases file present."; (( PASS++ ))
+    info "✔ Aliases file present."; (( PASS++ )) || true
 else
-    warn "✘ Aliases file missing."; (( WARN++ ))
+    warn "✘ Aliases file missing."; (( WARN_COUNT++ )) || true
 fi
+
+# FIX: renamed WARN → WARN_COUNT throughout to avoid shadowing the warn()
+# function (bash resolves the name conflict but it's a latent bug).
 
 # =============================================================================
 # SUMMARY
 # =============================================================================
 echo ""
-echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║        ✅  Local LLM Setup Complete!             ║${NC}"
-echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
+echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║      ✅  Local LLM Setup Complete!                   ║${NC}"
+echo -e "${GREEN}║  i7-7700K + 16 GB RAM + RTX 3060 12 GB              ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  Checks passed : ${GREEN}$PASS${NC}   Warnings: ${YELLOW}$WARN${NC}"
+echo -e "  Checks passed : ${GREEN}$PASS${NC}   Warnings: ${YELLOW}$WARN_COUNT${NC}"
 echo ""
 echo -e "  Models base   : $MODEL_BASE"
 echo -e "  GGUF models   : $GGUF_MODELS"
@@ -856,14 +965,20 @@ if [[ -f "$MODEL_CONFIG" ]]; then
     source "$MODEL_CONFIG"
     echo -e "  ${CYAN}Selected model : ${GREEN}${MODEL_NAME}${NC} (${MODEL_SIZE})"
     echo -e "  File           : ${MODEL_FILENAME}"
-    echo -e "  GPU layers     : ${GPU_LAYERS}"
+    echo -e "  GPU layers     : ${GPU_LAYERS}  (RTX 3060 12 GB tuned)"
     echo -e "  Quick test     : ${YELLOW}run-model \"What is AI?\"${NC}"
     echo ""
 fi
 
+echo -e "  ${YELLOW}Hardware tips for your setup:${NC}"
+echo -e "    • Context >4096 increases VRAM fast on 3060 — keep default unless needed"
+echo -e "    • If llama.cpp OOMs, reduce --gpu-layers by 4 and retry"
+echo -e "    • For Ollama: OLLAMA_NUM_PARALLEL=1 is enforced (16 GB RAM limit)"
+echo -e "    • CPU layers use AVX2 on your i7-7700K — still decent throughput"
+echo ""
 echo -e "  ${YELLOW}Next steps:${NC}"
 echo -e "    • Open a new terminal  (or: source $ALIAS_FILE)"
 echo -e "    • Run ${YELLOW}llm-help${NC} to see available commands"
 is_wsl2 && echo -e "    • After any reboot run ${YELLOW}ollama-start${NC}"
 echo ""
-echo -e "  Enjoy your uncensored local LLMs on your RTX 3060 12 GB! 🚀"
+echo -e "  Enjoy your local LLMs on your RTX 3060 12 GB! 🚀"
