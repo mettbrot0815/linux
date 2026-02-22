@@ -169,6 +169,23 @@ step "Directory setup"
 mkdir -p "$OLLAMA_MODELS" "$GGUF_MODELS" "$TEMP_DIR" "$BIN_DIR" "$CONFIG_DIR"
 info "Directories ready under $MODEL_BASE"
 
+# Ensure $BIN_DIR (~/.local/bin) is on PATH in both shell configs.
+# Ubuntu adds it only for login shells via /etc/profile.d; non-login interactive
+# shells (the normal case when opening a terminal) often miss it, so run-gguf
+# and local-models-info would be unreachable after install.
+for _rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    if [[ -f "$_rc" ]] && ! grep -q "# local-llm-setup PATH" "$_rc"; then
+        {
+          echo ""
+          echo "# local-llm-setup PATH"
+          echo "[[ \":\$PATH:\" != *\":$BIN_DIR:\"* ]] && export PATH=\"$BIN_DIR:\$PATH\""
+        } >> "$_rc"
+        info "Added $BIN_DIR to PATH in $_rc"
+    fi
+done
+# Patch the current session too so later steps can find the installed scripts.
+[[ ":$PATH:" != *":$BIN_DIR:"* ]] && export PATH="$BIN_DIR:$PATH"
+
 # =============================================================================
 # NVIDIA DRIVER CHECK
 # =============================================================================
@@ -238,7 +255,47 @@ setup_cuda_env() {
     return 0
 }
 
-if ! check_command nvcc; then
+# ---------- CUDA presence check -----------------------------------------------
+# Three independent probes — any one passing means CUDA is already installed.
+# Only if all three fail do we actually download and install.
+#
+# Probe A — filesystem scan for nvcc (catches installs outside $PATH)
+# Probe B — filesystem scan for libcudart.so.12 (catches libs-only installs)
+# Probe C — dpkg (catches any apt-installed cuda package even if its bin dir
+#           was never added to PATH, e.g. after a fresh reboot)
+
+CUDA_ALREADY_PRESENT=0
+
+# Probe A: find nvcc anywhere under common install roots and patch PATH.
+if ! command -v nvcc &>/dev/null; then
+    NVCC_PATH=$(find /usr/local /usr/lib/cuda /opt/cuda -maxdepth 6 \
+                    -name nvcc -type f 2>/dev/null | head -n1 || true)
+    if [[ -n "$NVCC_PATH" ]]; then
+        export PATH="$(dirname "$NVCC_PATH"):$PATH"
+        info "nvcc found at $NVCC_PATH — added to PATH."
+    fi
+fi
+command -v nvcc &>/dev/null && CUDA_ALREADY_PRESENT=1
+
+# Probe B: libcudart.so.12 — present means CUDA runtime is installed.
+if [[ "$CUDA_ALREADY_PRESENT" -eq 0 ]]; then
+    if find /usr/local /usr/lib /opt -maxdepth 7 \
+            -name "libcudart.so.12" 2>/dev/null | grep -q .; then
+        CUDA_ALREADY_PRESENT=1
+        info "libcudart.so.12 found on disk — CUDA runtime already present."
+    fi
+fi
+
+# Probe C: dpkg — any installed cuda-toolkit-* or cuda-libraries-* package.
+if [[ "$CUDA_ALREADY_PRESENT" -eq 0 ]]; then
+    if dpkg -l 'cuda-toolkit-*' 'cuda-libraries-*' 2>/dev/null \
+            | grep -q '^ii'; then
+        CUDA_ALREADY_PRESENT=1
+        info "CUDA package found via dpkg — already installed."
+    fi
+fi
+
+if [[ "$CUDA_ALREADY_PRESENT" -eq 0 ]]; then
     info "CUDA toolkit not found — installing via NVIDIA repo (driver is NOT touched)."
 
     UBUNTU_VERSION=$(lsb_release -rs 2>/dev/null || echo "unknown")
@@ -268,7 +325,7 @@ if ! check_command nvcc; then
         CUDA_PKG=$(echo "$all_cuda_pkgs" | sort -V | tail -n1 || true)
         if [[ -n "$CUDA_PKG" ]]; then
             warn "No CUDA 12.x toolkit found — installing $CUDA_PKG."
-            warn "Pre-built llama-cpp-python wheels may not exist for this version; a source build will be attempted."
+            warn "Pre-built llama-cpp-python wheels may not exist; a source build will be attempted."
             sudo apt-get install -y "$CUDA_PKG" || warn "CUDA package install returned non-zero."
         else
             warn "No versioned cuda-toolkit found; trying cuda-toolkit (latest)."
@@ -276,8 +333,7 @@ if ! check_command nvcc; then
         fi
     fi
 
-    setup_cuda_env || true
-
+    # After install, re-probe for nvcc in case it landed outside PATH.
     if ! command -v nvcc &>/dev/null; then
         NVCC_PATH=$(find /usr/local -name nvcc -type f 2>/dev/null | head -n1 || true)
         if [[ -n "$NVCC_PATH" ]]; then
@@ -286,13 +342,13 @@ if ! check_command nvcc; then
         else
             warn "nvcc not found after CUDA install. You may need to reboot or check the install."
         fi
-    else
-        info "CUDA toolkit installed: $(nvcc --version 2>/dev/null | grep release | head -n1 || echo 'version unknown')"
     fi
 else
     info "CUDA toolkit already present: $(nvcc --version 2>/dev/null | grep release | head -n1 || echo 'version unknown')"
-    setup_cuda_env || true
 fi
+
+# Always run env setup so LD_LIBRARY_PATH and PATH are correct for this session.
+setup_cuda_env || true
 
 if ldconfig -p 2>/dev/null | grep -q "libcudart.so.12"; then
     info "libcudart.so.12 found in ldconfig cache."
@@ -732,8 +788,8 @@ if ask_yes_no "Select a model optimised for RTX 3060 12 GB + 16 GB RAM?"; then
     NAME="" URL="" FILE="" SIZE="" LAYERS="" MODEL_SKIP=0
     case "$choice" in
         1) NAME="Qwen3-8B-abliterated"
-           URL="https://huggingface.co/mradermacher/Qwen3-8B-192k-Context-6X-Josiefied-Uncensored-i1-GGUF/resolve/main/Qwen3-8B-192k-Context-6X-Josiefied-Uncensored-i1.Q6_K.gguf"
-           FILE="qwen3-8b-abliterated-q6_k.gguf"; SIZE="8B"; LAYERS=36 ;;
+           URL="https://huggingface.co/bartowski/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q6_K.gguf"
+           FILE="qwen3-8b-q6_k.gguf"; SIZE="8B"; LAYERS=36 ;;
         2) NAME="Mistral-Nemo-12B"
            URL="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
            FILE="mistral-nemo-12b-q5_k_m.gguf"; SIZE="12B"; LAYERS=40 ;;
@@ -776,19 +832,35 @@ EOF
         if ask_yes_no "Download $NAME now?"; then
             info "Downloading $FILE to $GGUF_MODELS …"
             pushd "$GGUF_MODELS" > /dev/null
-            if command -v wget &>/dev/null; then
-                # FIX: added -c (resume partial downloads) — large models frequently
-                #      stall on domestic internet; resume saves hours.
-                retry 3 15 wget --tries=1 --timeout=60 -q --show-progress -c \
-                    "$URL" -O "$FILE" \
-                    || warn "Download failed — resume with: wget -c '$URL' -O '$GGUF_MODELS/$FILE'"
-            else
-                retry 3 15 curl -L --connect-timeout 30 --retry 0 -C - -# \
-                    "$URL" -o "$FILE" \
-                    || warn "Download failed — resume with: curl -L -C - '$URL' -o '$GGUF_MODELS/$FILE'"
+
+            # Use curl as primary: --fail exits non-zero on HTTP errors (4xx/5xx)
+            # so retry() actually retries on real failures.  -L follows the HF
+            # CDN redirect.  -C - resumes partial downloads.  --progress-bar gives
+            # clean output without the noise of -v.
+            # wget fallback kept but with errors visible (no -q) and timeout
+            # removed — it applied per-read and fired on slow CDN connections.
+            DL_OK=0
+            if command -v curl &>/dev/null; then
+                retry 3 15 curl -L --fail -C - --progress-bar \
+                    -o "$FILE" "$URL" \
+                    && DL_OK=1 \
+                    || warn "curl download failed."
             fi
-            if [[ -f "$FILE" ]]; then
+
+            if [[ "$DL_OK" -eq 0 ]] && command -v wget &>/dev/null; then
+                warn "Trying wget fallback…"
+                retry 3 15 wget --tries=1 --show-progress \
+                    -c -O "$FILE" "$URL" \
+                    && DL_OK=1 \
+                    || warn "wget download also failed."
+            fi
+
+            if [[ "$DL_OK" -eq 1 && -f "$FILE" ]]; then
                 info "Download complete: $(du -h "$FILE" | cut -f1)"
+            else
+                warn "Download failed after all attempts."
+                warn "  Resume manually with:"
+                warn "    curl -L -C - -o '$GGUF_MODELS/$FILE' '$URL'"
             fi
             popd > /dev/null
         fi
@@ -861,7 +933,7 @@ if ask_yes_no "Install QoL tools (zsh, htop, tmux, tree, ranger, w3m, mousepad, 
             if ! command -v fzf &>/dev/null; then
                 info "Installing fzf…"
                 if retry 2 5 git clone --depth 1 https://github.com/junegunn/fzf.git "$TEMP_DIR/fzf"; then
-                    "$TEMP_DIR/fzf/install" --all --no-bash --no-fish --no-update-rc || true
+                    "$TEMP_DIR/fzf/install" --all --no-bash --no-fish --no-update-rc </dev/null || true
                     rm -rf "$TEMP_DIR/fzf"
                 else
                     warn "Failed to clone fzf."
@@ -888,7 +960,7 @@ if ask_yes_no "Install QoL tools (zsh, htop, tmux, tree, ranger, w3m, mousepad, 
         fi
     fi
 
-    ranger --copy-config=all 2>/dev/null || true
+    ranger --copy-config=all </dev/null 2>/dev/null || true
 fi
 
 # =============================================================================
@@ -898,8 +970,9 @@ step "Final validation"
 
 PASS=0; WARN_COUNT=0
 
-if ldconfig -p 2>/dev/null | grep -q "libcudart.so.12" || [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-    info "✔ CUDA runtime library reachable."; (( PASS++ )) || true
+if find /usr/local /usr/lib /opt -maxdepth 7 \
+        -name "libcudart.so.12" 2>/dev/null | grep -q .; then
+    info "✔ CUDA runtime library (libcudart.so.12) found on disk."; (( PASS++ )) || true
 else
     warn "✘ libcudart.so.12 not found — CUDA may have issues."; (( WARN_COUNT++ )) || true
 fi
