@@ -163,18 +163,26 @@ if ! command -v nvcc &>/dev/null; then
         sudo apt install -y cuda-toolkit
     fi
 
-    # Verify CUDA toolkit installation
+    # --- FIX: Set up environment BEFORE verifying nvcc ---
+    setup_cuda_env
+
+    # Now verify CUDA toolkit installation
     if ! command -v nvcc &>/dev/null; then
-        error "CUDA toolkit installation failed – nvcc not found."
-    else
-        info "CUDA toolkit installed successfully."
+        # Try to find nvcc manually in case setup_cuda_env missed it
+        NVCC_PATH=$(find /usr/local -name nvcc -type f 2>/dev/null | head -n1)
+        if [ -n "$NVCC_PATH" ]; then
+            export PATH="$(dirname "$NVCC_PATH"):$PATH"
+            info "Found nvcc at $NVCC_PATH and added to PATH."
+        else
+            error "CUDA toolkit installation failed – nvcc not found even after searching."
+        fi
     fi
+    info "CUDA toolkit installed successfully."
 else
     info "CUDA toolkit already installed."
+    # Ensure environment is set even if already installed
+    setup_cuda_env
 fi
-
-# Set up CUDA environment
-setup_cuda_env
 
 # Double-check CUDA library
 if ! ldconfig -p | grep -q libcudart.so.12; then
