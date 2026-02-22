@@ -232,7 +232,6 @@ if ! check_command nvcc; then
     KEYRING_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION//./}/x86_64/cuda-keyring_1.1-1_all.deb"
     info "Downloading CUDA keyring from $KEYRING_URL"
     
-    # FIX: Show wget output so we can see why it fails, and fallback to system package if needed
     if ! retry 3 5 wget --verbose -O "$TEMP_DIR/cuda-keyring.deb" "$KEYRING_URL"; then
         warn "Failed to download CUDA keyring after multiple attempts."
         warn "Trying to install CUDA toolkit from system repositories (may be older version)."
@@ -654,12 +653,12 @@ if ask_yes_no "Select a model optimised for RTX 3060 12 GB + 16 GB RAM?"; then
     echo -e "${BLUE}║  Tuned for RTX 3060 12 GB VRAM + 16 GB RAM             ║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════════════════════╝${NC}\n"
 
-    echo "  1) Qwen3-8B-abliterated         Q6_K    35+ tok/s    36 layers  ~8.5 GB VRAM  ← best speed"
-    echo "  2) Mistral-Nemo-12B             Q5_K_M  30-35 tok/s  40 layers  ~9.0 GB VRAM  ← good balance"
-    echo "  3) Qwen2.5-14B-Instruct         Q4_K_M  25-30 tok/s  38 layers  ~10.5 GB VRAM"
-    echo "  4) SOLAR-10.7B-Uncensored       Q6_K    28-33 tok/s  40 layers  ~9.5 GB VRAM"
-    echo "  5) Mistral-Small-22B            Q4_K_M  15-20 tok/s  26 layers  ~11.5 GB VRAM (partial CPU offload)"
-    echo "  6) Wizard-Vicuna-30B-Uncensored Q3_K_S   8-12 tok/s  20 layers  ~10 GB VRAM + ~5 GB RAM ⚠ risky on 16 GB"
+    echo "  1) Qwen3-8B (Q6_K)                   36 layers  ~8.5 GB VRAM  ← best speed"
+    echo "  2) Mistral-Nemo-12B (Q5_K_M)          40 layers  ~9.0 GB VRAM  ← good balance"
+    echo "  3) Qwen2.5-14B-Instruct (Q4_K_M)      38 layers  ~10.5 GB VRAM"
+    echo "  4) SOLAR-10.7B-Instruct (Q6_K)        40 layers  ~9.5 GB VRAM"
+    echo "  5) Mistral-Small-22B (Q4_K_M)         26 layers  ~11.5 GB VRAM (partial CPU offload)"
+    echo "  6) Wizard-Vicuna-30B (Q3_K_S)         20 layers  ~10 GB VRAM + ~5 GB RAM ⚠ risky on 16 GB"
     echo "  7) Skip"
     echo ""
     echo -e "  ${YELLOW}Note:${NC} 70B models require 48+ GB RAM — not viable on 16 GB."
@@ -668,23 +667,23 @@ if ask_yes_no "Select a model optimised for RTX 3060 12 GB + 16 GB RAM?"; then
 
     NAME="" URL="" FILE="" SIZE="" LAYERS="" MODEL_SKIP=0
     case "$choice" in
-        1) NAME="Qwen3-8B-abliterated"
-           URL="https://huggingface.co/mradermacher/Qwen3-8B-192k-Context-6X-Josiefied-Uncensored-i1-GGUF/resolve/main/Qwen3-8B-192k-Context-6X-Josiefied-Uncensored-i1.Q6_K.gguf"
-           FILE="qwen3-8b-abliterated-q6_k.gguf"; SIZE="8B"; LAYERS=36 ;;
-        2) NAME="Mistral-Nemo-12B"
+        1) NAME="Qwen3-8B (Q6_K)"
+           URL="https://huggingface.co/bartowski/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q6_K.gguf"
+           FILE="qwen3-8b-q6_k.gguf"; SIZE="8B"; LAYERS=36 ;;
+        2) NAME="Mistral-Nemo-12B (Q5_K_M)"
            URL="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
            FILE="mistral-nemo-12b-q5_k_m.gguf"; SIZE="12B"; LAYERS=40 ;;
-        3) NAME="Qwen2.5-14B-Instruct"
+        3) NAME="Qwen2.5-14B-Instruct (Q4_K_M)"
            URL="https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf"
            FILE="qwen2.5-14b-instruct-q4_k_m.gguf"; SIZE="14B"; LAYERS=38 ;;
-        4) NAME="SOLAR-10.7B-Uncensored"
-           URL="https://huggingface.co/mradermacher/SOLAR-10.7B-Instruct-v1.0-uncensored-GGUF/resolve/main/SOLAR-10.7B-Instruct-v1.0-uncensored.Q6_K.gguf"
+        4) NAME="SOLAR-10.7B-Instruct (Q6_K)"
+           URL="https://huggingface.co/bartowski/SOLAR-10.7B-Instruct-v1.0-GGUF/resolve/main/SOLAR-10.7B-Instruct-v1.0-Q6_K.gguf"
            FILE="solar-10.7b-q6_k.gguf"; SIZE="11B"; LAYERS=40 ;;
-        5) NAME="Mistral-Small-22B"
+        5) NAME="Mistral-Small-22B (Q4_K_M)"
            URL="https://huggingface.co/bartowski/Mistral-Small-22B-ArliAI-RPMax-v1.1-GGUF/resolve/main/Mistral-Small-22B-ArliAI-RPMax-v1.1-Q4_K_M.gguf"
            FILE="mistral-small-22b-q4_k_m.gguf"; SIZE="22B"; LAYERS=26
            warn "22B model: ~11.5 GB VRAM + ~4 GB RAM. Close to limits on 16 GB." ;;
-        6) NAME="Wizard-Vicuna-30B-Uncensored"
+        6) NAME="Wizard-Vicuna-30B (Q3_K_S)"
            URL="https://huggingface.co/TheBloke/Wizard-Vicuna-30B-Uncensored-GGUF/resolve/main/wizard-vicuna-30b-uncensored.Q3_K_S.gguf"
            FILE="wizard-vicuna-30b-q3_k_s.gguf"; SIZE="30B"; LAYERS=20
            warn "⚠  30B model with 16 GB RAM: expect swap usage and possible OOM."
@@ -708,12 +707,10 @@ EOF
             info "Downloading $FILE to $GGUF_MODELS …"
             pushd "$GGUF_MODELS" > /dev/null
             if command -v wget &>/dev/null; then
-                # FIX: removed -q to show progress and errors
                 retry 3 15 wget --tries=1 --timeout=60 --show-progress -c \
                     "$URL" -O "$FILE" \
                     || warn "Download failed — resume with: wget -c '$URL' -O '$GGUF_MODELS/$FILE'"
             else
-                # FIX: removed -# (silent) to show progress
                 retry 3 15 curl -L --connect-timeout 30 --retry 0 -C - -o "$FILE" \
                     "$URL" \
                     || warn "Download failed — resume with: curl -L -C - '$URL' -o '$GGUF_MODELS/$FILE'"
