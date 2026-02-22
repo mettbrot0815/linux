@@ -43,6 +43,15 @@ CONFIG_DIR="$HOME/.config/local-llm"
 ALIAS_FILE="$HOME/.local_llm_aliases"
 MODEL_CONFIG="$CONFIG_DIR/selected_model.conf"
 
+# ---------- HuggingFace token (optional) --------------------------------------
+# Required for gated/private models (e.g. Llama 3, Gemma).
+# Set before running:  export HF_TOKEN="hf_..."
+# Or drop it in ~/.hf_token and this script will pick it up automatically.
+if [[ -z "${HF_TOKEN:-}" && -f "$HOME/.hf_token" ]]; then
+    HF_TOKEN=$(cat "$HOME/.hf_token")
+fi
+HF_TOKEN="${HF_TOKEN:-}"   # empty string if not set — no auth header added
+
 # ---------- Colors ------------------------------------------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -764,6 +773,46 @@ done
 # DEMOTED: Wizard-Vicuna-30B Q3_K_S (~13 GB file) — fits VRAM+RAM barely
 #          but leaves almost nothing for the OS; marked as "risky".
 # =============================================================================
+step "Hugging Face authentication"
+
+HF_TOKEN_FILE="$CONFIG_DIR/hf_token"
+HF_TOKEN=""
+
+# Load existing saved token
+if [[ -f "$HF_TOKEN_FILE" ]]; then
+    HF_TOKEN=$(cat "$HF_TOKEN_FILE")
+    info "Hugging Face token loaded from $HF_TOKEN_FILE"
+fi
+
+# Prompt for a new/updated token if none saved or user wants to update
+if [[ -z "$HF_TOKEN" ]]; then
+    echo -e "\n${YELLOW}A Hugging Face token is required to download gated models.${NC}"
+    echo -e "  Get one at: ${CYAN}https://huggingface.co/settings/tokens${NC} (role: Read)"
+    echo -e "  Leave blank to skip authenticated downloads (public models still work).\n"
+fi
+
+if [[ -z "$HF_TOKEN" ]] || ask_yes_no "Update saved Hugging Face token?"; then
+    # -s = silent (no echo), so the token never appears on screen or in the log
+    read -r -s -p "$(echo -e "${YELLOW}?${NC} Paste your HF token (input hidden): ")" HF_TOKEN_INPUT
+    echo  # newline after silent read
+    if [[ -n "$HF_TOKEN_INPUT" ]]; then
+        # Basic sanity check — HF tokens start with hf_
+        if [[ "$HF_TOKEN_INPUT" != hf_* ]]; then
+            warn "Token doesn't look like a valid HF token (expected hf_…) — saving anyway."
+        fi
+        HF_TOKEN="$HF_TOKEN_INPUT"
+        # Store with strict permissions — only owner can read
+        printf '%s' "$HF_TOKEN" > "$HF_TOKEN_FILE"
+        chmod 600 "$HF_TOKEN_FILE"
+        info "Token saved to $HF_TOKEN_FILE (chmod 600)"
+    else
+        warn "No token entered — gated model downloads may fail with HTTP 401."
+    fi
+fi
+
+# =============================================================================
+# MODEL SELECTION MENU
+# =============================================================================
 step "Model selection"
 
 if ask_yes_no "Select a model optimised for RTX 3060 12 GB + 16 GB RAM?"; then
@@ -773,7 +822,7 @@ if ask_yes_no "Select a model optimised for RTX 3060 12 GB + 16 GB RAM?"; then
     echo -e "${BLUE}╚════════════════════════════════════════════════════════╝${NC}\n"
 
     # Columns:  #  Name                          Quant   Speed        GPU layers  VRAM est
-    echo "  1) Qwen3-8B-abliterated         Q6_K    35+ tok/s    36 layers  ~8.5 GB VRAM  ← best speed"
+    echo "  1) Dolphin3.0-Llama3.1-8B      Q6_K    35+ tok/s    36 layers  ~8.5 GB VRAM  ← best speed / uncensored"
     echo "  2) Mistral-Nemo-12B             Q5_K_M  30-35 tok/s  40 layers  ~9.0 GB VRAM  ← good balance"
     echo "  3) Qwen2.5-14B-Instruct         Q4_K_M  25-30 tok/s  38 layers  ~10.5 GB VRAM"
     echo "  4) SOLAR-10.7B-Uncensored       Q6_K    28-33 tok/s  40 layers  ~9.5 GB VRAM"
@@ -787,9 +836,9 @@ if ask_yes_no "Select a model optimised for RTX 3060 12 GB + 16 GB RAM?"; then
 
     NAME="" URL="" FILE="" SIZE="" LAYERS="" MODEL_SKIP=0
     case "$choice" in
-        1) NAME="Qwen3-8B-abliterated"
-           URL="https://huggingface.co/bartowski/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q6_K.gguf"
-           FILE="qwen3-8b-q6_k.gguf"; SIZE="8B"; LAYERS=36 ;;
+        1) NAME="Dolphin3.0-Llama3.1-8B-Uncensored"
+           URL="https://huggingface.co/bartowski/Dolphin3.0-Llama3.1-8B-GGUF/resolve/main/Dolphin3.0-Llama3.1-8B-Q6_K.gguf"
+           FILE="dolphin3.0-llama3.1-8b-q6_k.gguf"; SIZE="8B"; LAYERS=36 ;;
         2) NAME="Mistral-Nemo-12B"
            URL="https://huggingface.co/bartowski/Mistral-Nemo-Instruct-2407-GGUF/resolve/main/Mistral-Nemo-Instruct-2407-Q5_K_M.gguf"
            FILE="mistral-nemo-12b-q5_k_m.gguf"; SIZE="12B"; LAYERS=40 ;;
@@ -833,15 +882,21 @@ EOF
             info "Downloading $FILE to $GGUF_MODELS …"
             pushd "$GGUF_MODELS" > /dev/null
 
-            # Use curl as primary: --fail exits non-zero on HTTP errors (4xx/5xx)
-            # so retry() actually retries on real failures.  -L follows the HF
-            # CDN redirect.  -C - resumes partial downloads.  --progress-bar gives
-            # clean output without the noise of -v.
-            # wget fallback kept but with errors visible (no -q) and timeout
-            # removed — it applied per-read and fired on slow CDN connections.
+            # Build auth header if token is available
+            HF_AUTH_CURL=()
+            HF_AUTH_WGET=()
+            if [[ -n "$HF_TOKEN" ]]; then
+                HF_AUTH_CURL=(-H "Authorization: Bearer $HF_TOKEN")
+                HF_AUTH_WGET=(--header="Authorization: Bearer $HF_TOKEN")
+                info "Downloading with Hugging Face authentication."
+            else
+                warn "No HF token — attempting unauthenticated download (may fail on gated models)."
+            fi
+
             DL_OK=0
             if command -v curl &>/dev/null; then
                 retry 3 15 curl -L --fail -C - --progress-bar \
+                    "${HF_AUTH_CURL[@]}" \
                     -o "$FILE" "$URL" \
                     && DL_OK=1 \
                     || warn "curl download failed."
@@ -850,6 +905,7 @@ EOF
             if [[ "$DL_OK" -eq 0 ]] && command -v wget &>/dev/null; then
                 warn "Trying wget fallback…"
                 retry 3 15 wget --tries=1 --show-progress \
+                    "${HF_AUTH_WGET[@]}" \
                     -c -O "$FILE" "$URL" \
                     && DL_OK=1 \
                     || warn "wget download also failed."
@@ -860,7 +916,7 @@ EOF
             else
                 warn "Download failed after all attempts."
                 warn "  Resume manually with:"
-                warn "    curl -L -C - -o '$GGUF_MODELS/$FILE' '$URL'"
+                warn "    curl -L -C - -H 'Authorization: Bearer \$(cat $HF_TOKEN_FILE)' -o '$GGUF_MODELS/$FILE' '$URL'"
             fi
             popd > /dev/null
         fi
