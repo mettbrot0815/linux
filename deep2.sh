@@ -29,6 +29,67 @@ error() { echo -e "${RED}[ERROR]${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
 is_wsl2() { grep -qi microsoft /proc/version 2>/dev/null && uname -r | grep -qi wsl2; }
 ask_yes_no() { local ans; read -p "$1 (y/N) " -n 1 -r ans; echo; [[ "$ans" =~ ^[Yy]$ ]]; }
 
+# Verify a command exists
+check_command() {
+    if ! command -v "$1" &>/dev/null; then
+        warn "$1 is not available. $2"
+        return 1
+    fi
+    return 0
+}
+
+# Verify Python module import
+check_python_module() {
+    python3 -c "import $1" 2>/dev/null && return 0 || return 1
+}
+
+# ---------- CUDA Environment Setup ----------
+setup_cuda_env() {
+    # Find CUDA installation directory
+    local cuda_candidates=(
+        "/usr/local/cuda"
+        "/usr/local/cuda-"[0-9.]*
+        "/usr/lib/cuda"
+        "/opt/cuda"
+    )
+    local cuda_lib_dir=""
+    for dir in "${cuda_candidates[@]}"; do
+        for d in $dir; do
+            if [ -d "$d" ]; then
+                if [ -f "$d/lib64/libcudart.so.12" ]; then
+                    cuda_lib_dir="$d/lib64"
+                    break 2
+                elif [ -f "$d/lib/libcudart.so.12" ]; then
+                    cuda_lib_dir="$d/lib"
+                    break 2
+                fi
+            fi
+        done
+    done
+
+    if [ -n "$cuda_lib_dir" ]; then
+        export LD_LIBRARY_PATH="$cuda_lib_dir:${LD_LIBRARY_PATH:-}"
+        info "CUDA libraries found at $cuda_lib_dir"
+        local cuda_bin_dir="${cuda_lib_dir%/lib*}/bin"
+        if [ -d "$cuda_bin_dir" ]; then
+            export PATH="$cuda_bin_dir:$PATH"
+        fi
+        # Persist in shell config
+        for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+            if [ -f "$rc" ] && ! grep -q "export PATH=.*cuda" "$rc"; then
+                echo "
+# CUDA toolkit
+export PATH=${cuda_bin_dir:-/usr/local/cuda/bin}:\$PATH
+export LD_LIBRARY_PATH=$cuda_lib_dir:\$LD_LIBRARY_PATH" >> "$rc"
+            fi
+        done
+        return 0
+    else
+        warn "Could not find CUDA libraries. Please ensure CUDA toolkit is installed correctly."
+        return 1
+    fi
+}
+
 # ---------- Pre‑flight ----------
 if [ "$EUID" -eq 0 ]; then
     error "Please do not run this script as root. Run as a normal user with sudo access."
@@ -43,6 +104,19 @@ if ! command -v sudo &>/dev/null; then error "sudo is required."; fi
 info "Installing core system packages..."
 sudo apt update
 sudo apt install -y curl wget git build-essential python3 python3-pip python3-venv
+
+# Double-check system dependencies
+MISSING_SYS=()
+for cmd in curl wget git python3 pip; do
+    if ! command -v $cmd &>/dev/null; then
+        MISSING_SYS+=($cmd)
+    fi
+done
+if [ ${#MISSING_SYS[@]} -gt 0 ]; then
+    error "System dependencies missing: ${MISSING_SYS[*]}. Please install them manually."
+else
+    info "All core system dependencies are present."
+fi
 
 # ---------- Directory Setup ----------
 mkdir -p "$OLLAMA_MODELS" "$GGUF_MODELS" "$TEMP_DIR" "$BIN_DIR" "$CONFIG_DIR"
@@ -59,29 +133,27 @@ if ! command -v nvidia-smi &>/dev/null; then
     else
         error "Cannot proceed without NVIDIA driver. Install it manually and re-run."
     fi
+else
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
+    info "Found GPU: $GPU_NAME"
+    DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
+    info "NVIDIA driver version: $DRIVER_VERSION"
 fi
-
-# Display GPU info
-GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
-info "Found GPU: $GPU_NAME"
 
 # ---------- CUDA Toolkit Installation (driver NOT touched) ----------
 if ! command -v nvcc &>/dev/null; then
     info "CUDA toolkit not found – installing via NVIDIA repository (driver not touched)."
 
-    # Detect Ubuntu version
     UBUNTU_VERSION=$(lsb_release -rs)
     if [[ "$UBUNTU_VERSION" != "22.04" && "$UBUNTU_VERSION" != "24.04" ]]; then
         error "Unsupported Ubuntu version. Please install CUDA toolkit manually."
     fi
 
-    # Add NVIDIA repository for CUDA toolkit only
     wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION//./}/x86_64/cuda-keyring_1.1-1_all.deb
     sudo dpkg -i cuda-keyring_1.1-1_all.deb
     rm cuda-keyring_1.1-1_all.deb
     sudo apt update
 
-    # Find the highest available cuda-toolkit package (driverless)
     CUDA_PKG=$(apt-cache search --names-only '^cuda-toolkit-[0-9]+-[0-9]+$' | sort -V | tail -n1 | cut -d' ' -f1)
     if [ -n "$CUDA_PKG" ]; then
         info "Installing $CUDA_PKG ..."
@@ -90,23 +162,29 @@ if ! command -v nvcc &>/dev/null; then
         warn "No versioned cuda-toolkit package found; installing cuda-toolkit (latest)."
         sudo apt install -y cuda-toolkit
     fi
+
+    # Verify CUDA toolkit installation
+    if ! command -v nvcc &>/dev/null; then
+        error "CUDA toolkit installation failed – nvcc not found."
+    else
+        info "CUDA toolkit installed successfully."
+    fi
 else
     info "CUDA toolkit already installed."
 fi
 
-# Set environment variables (persist in .bashrc/.zshrc)
-CUDA_PATH="/usr/local/cuda"
-if [ -d "$CUDA_PATH" ]; then
-    for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-        if [ -f "$rc" ] && ! grep -q "export PATH=.*cuda" "$rc"; then
-            echo "
-# CUDA toolkit
-export PATH=$CUDA_PATH/bin:\$PATH
-export LD_LIBRARY_PATH=$CUDA_PATH/lib64:\$LD_LIBRARY_PATH" >> "$rc"
-        fi
-    done
-    export PATH="$CUDA_PATH/bin:$PATH"
-    export LD_LIBRARY_PATH="$CUDA_PATH/lib64:$LD_LIBRARY_PATH"
+# Set up CUDA environment
+setup_cuda_env
+
+# Double-check CUDA library
+if ! ldconfig -p | grep -q libcudart.so.12; then
+    warn "libcudart.so.12 not found in ldconfig cache. LD_LIBRARY_PATH is set to $LD_LIBRARY_PATH"
+    # Attempt to find it manually
+    if ! find /usr/local/cuda* -name 'libcudart.so.12' 2>/dev/null | grep -q .; then
+        error "CUDA runtime library (libcudart.so.12) not found. CUDA toolkit may be incomplete."
+    else
+        info "CUDA runtime library found but not in ldconfig. Using LD_LIBRARY_PATH."
+    fi
 fi
 
 # ---------- Python Virtual Environment ----------
@@ -116,9 +194,13 @@ info "Setting up Python venv at $VENV_DIR"
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip setuptools wheel
 
+# Verify venv is active
+if [[ "$VIRTUAL_ENV" != "$VENV_DIR" ]]; then
+    error "Python virtual environment not activated correctly."
+fi
+
 # ---------- Install llama-cpp-python with CUDA ----------
 info "Installing llama-cpp-python with CUDA support..."
-# Try pre-built wheel first, fallback to source compile
 if pip install llama-cpp-python \
     --index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 \
     --extra-index-url https://pypi.org/simple; then
@@ -128,12 +210,27 @@ else
     CMAKE_ARGS="-DLLAMA_CUBLAS=on" pip install llama-cpp-python --no-cache-dir
 fi
 
+# Verify llama-cpp-python import
+if check_python_module llama_cpp; then
+    info "llama-cpp-python works."
+else
+    warn "llama-cpp-python import failed. Check CUDA library paths."
+    # Provide diagnostic info
+    python3 -c "import sys; print(sys.path)"
+    echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+fi
+
 # ---------- Install Ollama ----------
 if ! command -v ollama &>/dev/null; then
     info "Installing Ollama..."
     curl -fsSL https://ollama.com/install.sh | sh
 else
     info "Ollama already installed."
+fi
+
+# Verify Ollama installation
+if ! command -v ollama &>/dev/null; then
+    error "Ollama installation failed."
 fi
 
 # ---------- Configure Ollama ----------
@@ -172,6 +269,22 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl enable ollama
     sudo systemctl restart ollama
+fi
+
+# Wait a moment for Ollama to start
+sleep 3
+if is_wsl2; then
+    if pgrep -f "ollama serve" >/dev/null; then
+        info "Ollama is running."
+    else
+        warn "Ollama not running. Start manually with: ollama-start"
+    fi
+else
+    if systemctl is-active --quiet ollama; then
+        info "Ollama service is active."
+    else
+        warn "Ollama service not active. Check with: sudo systemctl status ollama"
+    fi
 fi
 
 # ---------- Helper Scripts ----------
@@ -309,7 +422,6 @@ EOF
         if ask_yes_no "Download $NAME ($FILE ~? GB) now?"; then
             info "Downloading to $GGUF_MODELS..."
             cd "$GGUF_MODELS"
-            # Use wget with retry
             if command -v wget &>/dev/null; then
                 wget --tries=3 --timeout=30 -q --show-progress "$URL" -O "$FILE" || warn "Download failed. Try manual download."
             else
@@ -322,25 +434,70 @@ EOF
     fi
 fi
 
-# ---------- Quality of Life Tools ----------
-if ask_yes_no "Install quality-of-life tools (zsh, ranger, w3m, htop, tmux, tree)?"; then
+# ---------- Quality of Life Tools (including mousepad, thunar, ezsh, fzf-tab) ----------
+if ask_yes_no "Install quality-of-life tools (zsh, ranger, w3m, htop, tmux, tree, mousepad, thunar)?"; then
     info "Installing QoL tools..."
-    sudo apt install -y zsh htop tmux tree ranger w3m w3m-img
+    sudo apt install -y zsh htop tmux tree ranger w3m w3m-img mousepad thunar
 
-    if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
-        info "Installing Oh My Zsh..."
-        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+    # Verify installations
+    for tool in zsh htop tmux tree ranger w3m; do
+        if ! command -v "$tool" &>/dev/null; then
+            warn "$tool installation may have failed."
+        fi
+    done
+
+    # ---------- Additional Zsh Customizations ----------
+    if ask_yes_no "Install ezsh (alternative Zsh framework) instead of Oh My Zsh?"; then
+        info "Installing ezsh..."
+        if git clone https://github.com/jotyGill/ezsh "$TEMP_DIR/ezsh"; then
+            cd "$TEMP_DIR/ezsh"
+            ./install.sh || warn "ezsh installation failed. Continuing with Oh My Zsh."
+            cd "$HOME"
+            rm -rf "$TEMP_DIR/ezsh"
+        else
+            warn "Failed to clone ezsh repository."
+        fi
+    else
+        # Install Oh My Zsh if not present
+        if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
+            info "Installing Oh My Zsh..."
+            sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+        else
+            info "Oh My Zsh already installed."
+        fi
+
+        # Install useful zsh plugins
+        ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+        [ ! -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ] && git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
+        [ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ] && git clone https://github.com/zsh-users/zsh-autosuggestions.git "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
+
+        # Install fzf-tab if requested
+        if ask_yes_no "Install fzf-tab (fuzzy tab completion) for Zsh?"; then
+            info "Installing fzf-tab..."
+            if [ -d "$ZSH_CUSTOM" ]; then
+                git clone https://github.com/Aloxaf/fzf-tab "$ZSH_CUSTOM/plugins/fzf-tab"
+                # Enable the plugin in .zshrc
+                if [ -f "$HOME/.zshrc" ]; then
+                    sed -i 's/^plugins=(\(.*\))/plugins=(\1 fzf-tab)/' "$HOME/.zshrc" 2>/dev/null || true
+                    # Also install fzf binary if not present
+                    if ! command -v fzf &>/dev/null; then
+                        info "Installing fzf..."
+                        git clone --depth 1 https://github.com/junegunn/fzf.git "$TEMP_DIR/fzf"
+                        "$TEMP_DIR/fzf/install" --all --no-bash --no-fish --no-update-rc
+                        rm -rf "$TEMP_DIR/fzf"
+                    fi
+                fi
+            fi
+        fi
+
+        # Update .zshrc to enable plugins
+        if [ -f "$HOME/.zshrc" ]; then
+            sed -i 's/^plugins=(git)/plugins=(git zsh-syntax-highlighting zsh-autosuggestions)/' "$HOME/.zshrc" 2>/dev/null || true
+            ! grep -q "source $ALIAS_FILE" "$HOME/.zshrc" && echo -e "\n[ -f $ALIAS_FILE ] && source $ALIAS_FILE" >> "$HOME/.zshrc"
+        fi
     fi
 
-    ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
-    [ ! -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ] && git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
-    [ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ] && git clone https://github.com/zsh-users/zsh-autosuggestions.git "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
-
-    if [ -f "$HOME/.zshrc" ]; then
-        sed -i 's/^plugins=(git)/plugins=(git zsh-syntax-highlighting zsh-autosuggestions)/' "$HOME/.zshrc" 2>/dev/null || true
-        ! grep -q "source $ALIAS_FILE" "$HOME/.zshrc" && echo -e "\n[ -f $ALIAS_FILE ] && source $ALIAS_FILE" >> "$HOME/.zshrc"
-    fi
-
+    # Optionally set zsh as default
     if [[ "$SHELL" != "$(which zsh)" ]] && ask_yes_no "Set zsh as default shell?"; then
         chsh -s "$(which zsh)" || warn "Failed to set zsh. Manual: chsh -s $(which zsh)"
     fi
@@ -348,14 +505,50 @@ if ask_yes_no "Install quality-of-life tools (zsh, ranger, w3m, htop, tmux, tree
     ranger --copy-config=all 2>/dev/null || true
 fi
 
-# ---------- Final Validation ----------
-info "Validating installation..."
-python3 -c "import llama_cpp" && info "llama-cpp-python works." || warn "llama-cpp-python import failed."
+# ---------- Final Validation (Double-Check) ----------
+info "Performing final validation of all components..."
 
-if is_wsl2; then
-    pgrep -f "ollama serve" >/dev/null && info "Ollama is running." || warn "Ollama not running. Start with: ollama-start"
+# 1. CUDA libraries
+if ! ldconfig -p | grep -q libcudart.so.12; then
+    warn "libcudart.so.12 not found in ldconfig cache. If you encounter errors, set LD_LIBRARY_PATH as above."
+fi
+
+# 2. Python venv and llama-cpp
+if [[ "$VIRTUAL_ENV" == "$VENV_DIR" ]] && check_python_module llama_cpp; then
+    info "llama-cpp-python is importable."
 else
-    systemctl is-active --quiet ollama && info "Ollama service active." || warn "Ollama not running. Check: sudo systemctl status ollama"
+    warn "llama-cpp-python import failed. Run: source $VENV_DIR/bin/activate and check manually."
+fi
+
+# 3. Ollama
+if is_wsl2; then
+    if pgrep -f "ollama serve" >/dev/null; then
+        info "Ollama is running."
+    else
+        warn "Ollama not running. Start with: ollama-start"
+    fi
+else
+    if systemctl is-active --quiet ollama; then
+        info "Ollama service is active."
+    else
+        warn "Ollama service not active. Check with: sudo systemctl status ollama"
+    fi
+fi
+
+# 4. Helper scripts
+for script in "$BIN_DIR/run-gguf" "$BIN_DIR/local-models-info"; do
+    if [ -x "$script" ]; then
+        info "$(basename "$script") is executable."
+    else
+        warn "$script is missing or not executable."
+    fi
+done
+
+# 5. Aliases file
+if [ -f "$ALIAS_FILE" ]; then
+    info "Aliases file exists."
+else
+    warn "Aliases file missing."
 fi
 
 # ---------- Final Output ----------
